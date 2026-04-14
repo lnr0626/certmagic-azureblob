@@ -62,6 +62,14 @@ func (*AzureBlobStorage) CaddyModule() caddy.ModuleInfo {
 func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 	s.logger = ctx.Logger()
 
+	// Resolve any Caddy placeholders (e.g. {env.VAR}) in config values.
+	// This is a safety net — {$VAR} parse-time substitution is preferred
+	// in Caddyfiles, but {env.VAR} should also work.
+	repl := caddy.NewReplacer()
+	s.ConnectionString = repl.ReplaceAll(s.ConnectionString, "")
+	s.Container = repl.ReplaceAll(s.Container, "")
+	s.Prefix = repl.ReplaceAll(s.Prefix, "")
+
 	if s.Container == "" {
 		s.Container = "caddy-certs"
 	}
@@ -113,7 +121,7 @@ func (s *AzureBlobStorage) CertMagicStorage() (certmagic.Storage, error) {
 // UnmarshalCaddyfile parses the Caddyfile configuration for this module.
 //
 //	storage azure_blob {
-//	    connection_string {env.AZURE_STORAGE_CONNECTION_STRING}
+//	    connection_string "{$AZURE_STORAGE_CONNECTION_STRING}"
 //	    container          caddy-certs
 //	    prefix             ""
 //	    lease_duration     30
