@@ -91,17 +91,16 @@ func (s *AzureBlobStorage) decryptLoadedValue(key string, data []byte) ([]byte, 
 		return plaintext, nil
 	}
 
-	if len(data) < minEncryptedBlobSize {
-		if s.logger != nil {
-			s.logger.Warn("encryption enabled but blob appears unencrypted; returning raw bytes",
-				zap.String("key", key),
-				zap.Int("size", len(data)),
-			)
-		}
-		return data, nil
+	// Decryption failed — this blob was likely written before encryption was
+	// enabled.  Return the raw bytes so existing unencrypted certificates
+	// continue to work.  The next Store() will re-encrypt the data.
+	if s.logger != nil {
+		s.logger.Warn("encryption enabled but blob failed to decrypt; returning raw bytes (will be encrypted on next store)",
+			zap.String("key", key),
+			zap.Int("size", len(data)),
+		)
 	}
-
-	return nil, fmt.Errorf("decrypting key %q: %w", key, err)
+	return data, nil
 }
 
 // Delete removes the value at key. If the key is a prefix (directory),

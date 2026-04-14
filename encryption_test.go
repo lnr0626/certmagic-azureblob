@@ -108,13 +108,29 @@ func TestDecryptLoadedValueFallsBackToPlaintext(t *testing.T) {
 		EncryptionKey: testEncryptionKeyHex,
 		logger:        zap.NewNop(),
 	}
-	plaintext := []byte("legacy-unencrypted")
 
-	got, err := s.decryptLoadedValue("legacy/key", plaintext)
-	if err != nil {
-		t.Fatalf("decryptLoadedValue: %v", err)
-	}
-	if !bytes.Equal(got, plaintext) {
-		t.Fatalf("decryptLoadedValue fallback = %q, want %q", got, plaintext)
-	}
+	t.Run("short blob", func(t *testing.T) {
+		plaintext := []byte("tiny")
+
+		got, err := s.decryptLoadedValue("legacy/short", plaintext)
+		if err != nil {
+			t.Fatalf("decryptLoadedValue: %v", err)
+		}
+		if !bytes.Equal(got, plaintext) {
+			t.Fatalf("decryptLoadedValue fallback = %q, want %q", got, plaintext)
+		}
+	})
+
+	t.Run("large unencrypted blob like a real PEM cert", func(t *testing.T) {
+		// Simulate a real unencrypted PEM private key (well above minEncryptedBlobSize).
+		plaintext := bytes.Repeat([]byte("-----BEGIN PRIVATE KEY-----\nMIIE...\n"), 50)
+
+		got, err := s.decryptLoadedValue("certs/example.com/privkey.pem", plaintext)
+		if err != nil {
+			t.Fatalf("decryptLoadedValue should fall back for large unencrypted blob, got: %v", err)
+		}
+		if !bytes.Equal(got, plaintext) {
+			t.Fatalf("decryptLoadedValue fallback = %q, want %q", got, plaintext)
+		}
+	})
 }
