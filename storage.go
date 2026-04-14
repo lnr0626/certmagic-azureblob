@@ -86,21 +86,26 @@ func (s *AzureBlobStorage) decryptLoadedValue(key string, data []byte) ([]byte, 
 		return data, nil
 	}
 
-	plaintext, err := s.decrypt(data)
-	if err == nil {
-		return plaintext, nil
+	// If the blob doesn't start with our magic header, it was written before
+	// encryption was enabled.  Return the raw bytes — the next Store() will
+	// re-encrypt them.
+	if len(data) < len(encryptedBlobMagic) || !bytes.Equal(data[:len(encryptedBlobMagic)], encryptedBlobMagic) {
+		if s.logger != nil {
+			s.logger.Warn("encryption enabled but blob appears unencrypted; returning raw bytes (will be encrypted on next store)",
+				zap.String("key", key),
+				zap.Int("size", len(data)),
+			)
+		}
+		return data, nil
 	}
 
-	// Decryption failed — this blob was likely written before encryption was
-	// enabled.  Return the raw bytes so existing unencrypted certificates
-	// continue to work.  The next Store() will re-encrypt the data.
-	if s.logger != nil {
-		s.logger.Warn("encryption enabled but blob failed to decrypt; returning raw bytes (will be encrypted on next store)",
-			zap.String("key", key),
-			zap.Int("size", len(data)),
-		)
+	// Blob has the magic header — it was encrypted by this plugin.
+	// Decrypt failures here are real errors (wrong key, corruption).
+	plaintext, err := s.decrypt(data)
+	if err != nil {
+		return nil, fmt.Errorf("decrypting key %q: %w", key, err)
 	}
-	return data, nil
+	return plaintext, nil
 }
 
 // Delete removes the value at key. If the key is a prefix (directory),

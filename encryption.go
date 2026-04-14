@@ -1,6 +1,7 @@
 package certmagicazureblob
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -9,11 +10,19 @@ import (
 )
 
 const (
-	aes256KeySize        = 32
-	nonceSize            = 12
-	gcmTagSize           = 16
-	minEncryptedBlobSize = nonceSize + gcmTagSize
+	aes256KeySize = 32
+	nonceSize     = 12
+	gcmTagSize    = 16
 )
+
+// encryptedBlobMagic is a 4-byte header prepended to every encrypted blob.
+// It lets Load() distinguish "encrypted with this plugin" from "legacy
+// plaintext written before encryption was enabled" — without that marker the
+// fallback path can't tell a wrong-key failure from a legacy blob.
+var encryptedBlobMagic = []byte{0x00, 'E', 'N', 'C'}
+
+// minEncryptedBlobSize is magic + nonce + at least one GCM tag (empty plaintext).
+var minEncryptedBlobSize = len(encryptedBlobMagic) + nonceSize + gcmTagSize
 
 func (s *AzureBlobStorage) encryptionEnabled() bool {
 	return s.EncryptionKey != ""
@@ -44,7 +53,8 @@ func (s *AzureBlobStorage) encrypt(plaintext []byte) ([]byte, error) {
 	}
 
 	sealed := aead.Seal(nil, nonce, plaintext, nil)
-	encrypted := make([]byte, 0, len(nonce)+len(sealed))
+	encrypted := make([]byte, 0, len(encryptedBlobMagic)+len(nonce)+len(sealed))
+	encrypted = append(encrypted, encryptedBlobMagic...)
 	encrypted = append(encrypted, nonce...)
 	encrypted = append(encrypted, sealed...)
 	return encrypted, nil
@@ -62,6 +72,9 @@ func (s *AzureBlobStorage) decrypt(ciphertext []byte) ([]byte, error) {
 	if len(ciphertext) < minEncryptedBlobSize {
 		return nil, fmt.Errorf("ciphertext too short: got %d bytes, need at least %d", len(ciphertext), minEncryptedBlobSize)
 	}
+	if !bytes.Equal(ciphertext[:len(encryptedBlobMagic)], encryptedBlobMagic) {
+		return nil, fmt.Errorf("missing encryption header")
+	}
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -72,8 +85,9 @@ func (s *AzureBlobStorage) decrypt(ciphertext []byte) ([]byte, error) {
 		return nil, fmt.Errorf("creating GCM cipher: %w", err)
 	}
 
-	nonce := ciphertext[:nonceSize]
-	payload := ciphertext[nonceSize:]
+	headerLen := len(encryptedBlobMagic)
+	nonce := ciphertext[headerLen : headerLen+nonceSize]
+	payload := ciphertext[headerLen+nonceSize:]
 	plaintext, err := aead.Open(nil, nonce, payload, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decrypting data: %w", err)
