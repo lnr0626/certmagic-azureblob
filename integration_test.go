@@ -519,3 +519,54 @@ func TestReleaseLocksOnCleanup(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanLockBlobs(t *testing.T) {
+	s := testStorage(t)
+	s.CleanLockBlobs = true
+	ctx := context.Background()
+
+	lockName := "clean-me"
+
+	// Acquire and release a lock with cleanup enabled.
+	if err := s.Lock(ctx, lockName); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	if err := s.Unlock(ctx, lockName); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+
+	// The lock blob should have been deleted.
+	blobKey := s.lockBlobName(lockName)
+	exists, err := s.Exists(ctx, blobKey)
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if exists {
+		t.Error("lock blob should have been deleted after unlock with CleanLockBlobs=true")
+	}
+
+	// Verify default behavior (no cleanup) still leaves the blob.
+	s2 := &AzureBlobStorage{
+		Container:      s.Container,
+		CleanLockBlobs: false,
+		client:         s.client,
+		logger:         zap.NewNop(),
+	}
+
+	lockName2 := "keep-me"
+	if err := s2.Lock(ctx, lockName2); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	if err := s2.Unlock(ctx, lockName2); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+
+	blobKey2 := s2.lockBlobName(lockName2)
+	exists2, err := s2.Exists(ctx, blobKey2)
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if !exists2 {
+		t.Error("lock blob should remain after unlock with CleanLockBlobs=false")
+	}
+}

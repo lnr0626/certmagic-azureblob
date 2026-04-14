@@ -20,6 +20,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				container my-certs
 				prefix staging
 				lease_duration 45
+				clean_lock_blobs
 			}`,
 			check: func(t *testing.T, s *AzureBlobStorage) {
 				if s.ConnectionString != "DefaultEndpointsProtocol=https;AccountName=test" {
@@ -34,6 +35,9 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				if s.LeaseDuration != 45 {
 					t.Errorf("LeaseDuration = %d", s.LeaseDuration)
 				}
+				if !s.CleanLockBlobs {
+					t.Error("CleanLockBlobs should be true")
+				}
 			},
 		},
 		{
@@ -47,6 +51,9 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				}
 				if s.Container != "" {
 					t.Errorf("Container should be empty (default applied at provision), got %q", s.Container)
+				}
+				if s.CleanLockBlobs {
+					t.Error("CleanLockBlobs should default to false")
 				}
 			},
 		},

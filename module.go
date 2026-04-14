@@ -33,6 +33,12 @@ type AzureBlobStorage struct {
 	// LeaseDuration is the blob lease duration in seconds (15-60). Default: 30.
 	LeaseDuration int32 `json:"lease_duration,omitempty"`
 
+	// CleanLockBlobs deletes lock blobs after releasing the lease. Default: false.
+	// When false, empty lock blobs accumulate in the locks/ prefix over time.
+	// For most deployments, an Azure Blob lifecycle management policy is the
+	// better cleanup approach — see README for details.
+	CleanLockBlobs bool `json:"clean_lock_blobs,omitempty"`
+
 	client ClientProvider
 	locks  sync.Map
 	logger *zap.Logger
@@ -104,6 +110,7 @@ func (s *AzureBlobStorage) CertMagicStorage() (certmagic.Storage, error) {
 //	    container          caddy-certs
 //	    prefix             ""
 //	    lease_duration     30
+//	    clean_lock_blobs
 //	}
 func (s *AzureBlobStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	d.Next() // consume the directive name
@@ -140,6 +147,9 @@ func (s *AzureBlobStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.Errf("lease_duration must be between 15 and 60 seconds, got %d", dur)
 			}
 			s.LeaseDuration = int32(dur)
+
+		case "clean_lock_blobs":
+			s.CleanLockBlobs = true
 
 		default:
 			return d.Errf("unrecognized option: %s", d.Val())

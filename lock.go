@@ -152,6 +152,18 @@ func (s *AzureBlobStorage) Unlock(ctx context.Context, name string) error {
 	}
 
 	s.logger.Debug("lock released", zap.String("lock", name))
+
+	// Optionally clean up the lock blob to prevent accumulation.
+	if s.CleanLockBlobs {
+		blobClient := cc.NewBlobClient(s.lockBlobName(name))
+		if _, err := blobClient.Delete(ctx, nil); err != nil && !isBlobNotFound(err) {
+			s.logger.Warn("failed to delete lock blob after release",
+				zap.String("lock", name),
+				zap.Error(err),
+			)
+		}
+	}
+
 	return nil
 }
 

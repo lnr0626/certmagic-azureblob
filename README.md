@@ -29,6 +29,7 @@ xcaddy build --with github.com/lnr0626/certmagic-azureblob
         container          caddy-certs
         prefix             production
         lease_duration     30
+        clean_lock_blobs
     }
 }
 
@@ -46,7 +47,8 @@ example.com {
     "connection_string": "{env.AZURE_STORAGE_CONNECTION_STRING}",
     "container": "caddy-certs",
     "prefix": "production",
-    "lease_duration": 30
+    "lease_duration": 30,
+    "clean_lock_blobs": true
   }
 }
 ```
@@ -59,6 +61,7 @@ example.com {
 | `container` | `caddy-certs` | Blob container name (created automatically if it doesn't exist) |
 | `prefix` | *(none)* | Optional path prefix for all blob names within the container |
 | `lease_duration` | `30` | Blob lease duration in seconds (15–60). Controls crash recovery time |
+| `clean_lock_blobs` | `false` | Delete lock blobs after releasing the lease. See [Lock blob cleanup](#lock-blob-cleanup) |
 
 ## How it works
 
@@ -84,6 +87,50 @@ If a Caddy instance crashes, the lease expires automatically after `lease_durati
 | 15s | Fast (15s) | Tight (5s between renewals) |
 | 30s (default) | Moderate (30s) | Comfortable (10s margin) |
 | 60s | Slow (60s) | Very safe (20s margin) |
+
+### Lock blob cleanup
+
+The plugin creates empty blobs at `locks/{name}` to serve as lease targets. By default, these blobs are **not deleted** after the lease is released, which means they accumulate over time.
+
+Two cleanup strategies are available:
+
+#### Option 1: `clean_lock_blobs` (simple)
+
+Set `clean_lock_blobs` in your Caddyfile or JSON config. The plugin will delete each lock blob immediately after releasing the lease. This adds one extra API call per unlock but keeps the container tidy.
+
+> **Note:** If a Caddy instance crashes before unlocking, the lock blob will remain. This is harmless — the lease expires automatically and the blob will be cleaned up on the next successful lock/unlock cycle for that name.
+
+#### Option 2: Azure Blob lifecycle management policy (recommended for production)
+
+Use an Azure lifecycle management policy to automatically delete old lock blobs. This handles crash-orphaned blobs without any plugin-side logic:
+
+```bash
+az storage account management-policy create \
+  --account-name caddycerts \
+  --resource-group mygroup \
+  --policy '{
+    "rules": [{
+      "enabled": true,
+      "name": "cleanup-lock-blobs",
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["caddy-certs/locks/"]
+        },
+        "actions": {
+          "baseBlob": {
+            "delete": {
+              "daysAfterModificationGreaterThan": 30
+            }
+          }
+        }
+      }
+    }]
+  }'
+```
+
+Adjust `prefixMatch` to include your container name and any configured `prefix` (e.g., `caddy-certs/production/locks/`).
 
 ## Azure setup
 
