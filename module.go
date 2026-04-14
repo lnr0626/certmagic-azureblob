@@ -24,6 +24,9 @@ type AzureBlobStorage struct {
 	// ConnectionString is the Azure Storage connection string.
 	ConnectionString string `json:"connection_string,omitempty"`
 
+	// EncryptionKey is an optional hex-encoded 32-byte AES-256-GCM key.
+	EncryptionKey string `json:"encryption_key,omitempty"`
+
 	// Container is the blob container name. Default: "caddy-certs".
 	Container string `json:"container,omitempty"`
 
@@ -67,6 +70,7 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 	// in Caddyfiles, but {env.VAR} should also work.
 	repl := caddy.NewReplacer()
 	s.ConnectionString = repl.ReplaceAll(s.ConnectionString, "")
+	s.EncryptionKey = repl.ReplaceAll(s.EncryptionKey, "")
 	s.Container = repl.ReplaceAll(s.Container, "")
 	s.Prefix = repl.ReplaceAll(s.Prefix, "")
 
@@ -84,6 +88,9 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 		zap.String("prefix", s.Prefix),
 		zap.Int32("lease_duration", s.leaseDuration()),
 	)
+	if s.encryptionEnabled() {
+		s.logger.Info("azure blob storage client-side encryption enabled")
+	}
 
 	return nil
 }
@@ -93,6 +100,9 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 func (s *AzureBlobStorage) Validate() error {
 	if s.ConnectionString == "" {
 		return fmt.Errorf("connection_string is required")
+	}
+	if _, err := s.parseEncryptionKey(); err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -122,6 +132,7 @@ func (s *AzureBlobStorage) CertMagicStorage() (certmagic.Storage, error) {
 //
 //	storage azure_blob {
 //	    connection_string "{$AZURE_STORAGE_CONNECTION_STRING}"
+//	    encryption_key    "{env.CADDY_CERT_ENCRYPTION_KEY}"
 //	    container          caddy-certs
 //	    prefix             ""
 //	    lease_duration     30
@@ -144,6 +155,12 @@ func (s *AzureBlobStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.ArgErr()
 			}
 			s.Container = d.Val()
+
+		case "encryption_key":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			s.EncryptionKey = d.Val()
 
 		case "prefix":
 			if !d.NextArg() {

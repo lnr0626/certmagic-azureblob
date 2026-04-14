@@ -13,6 +13,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/caddyserver/certmagic"
+	"go.uber.org/zap"
 )
 
 func (s *AzureBlobStorage) blobName(key string) string {
@@ -39,9 +40,13 @@ func (s *AzureBlobStorage) Store(ctx context.Context, key string, value []byte) 
 	if err != nil {
 		return fmt.Errorf("getting container client: %w", err)
 	}
+	payload, err := s.encrypt(value)
+	if err != nil {
+		return fmt.Errorf("encrypting key %q: %w", key, err)
+	}
 
 	blobClient := cc.NewBlockBlobClient(s.blobName(key))
-	_, err = blobClient.Upload(ctx, streaming.NopCloser(bytes.NewReader(value)), &blockblob.UploadOptions{
+	_, err = blobClient.Upload(ctx, streaming.NopCloser(bytes.NewReader(payload)), &blockblob.UploadOptions{
 		HTTPHeaders: &blob.HTTPHeaders{
 			BlobContentType: ptr("application/octet-stream"),
 		},
@@ -73,7 +78,30 @@ func (s *AzureBlobStorage) Load(ctx context.Context, key string) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("reading key %q: %w", key, err)
 	}
-	return data, nil
+	return s.decryptLoadedValue(key, data)
+}
+
+func (s *AzureBlobStorage) decryptLoadedValue(key string, data []byte) ([]byte, error) {
+	if !s.encryptionEnabled() {
+		return data, nil
+	}
+
+	plaintext, err := s.decrypt(data)
+	if err == nil {
+		return plaintext, nil
+	}
+
+	if len(data) < minEncryptedBlobSize {
+		if s.logger != nil {
+			s.logger.Warn("encryption enabled but blob appears unencrypted; returning raw bytes",
+				zap.String("key", key),
+				zap.Int("size", len(data)),
+			)
+		}
+		return data, nil
+	}
+
+	return nil, fmt.Errorf("decrypting key %q: %w", key, err)
 }
 
 // Delete removes the value at key. If the key is a prefix (directory),

@@ -17,6 +17,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			name: "full config",
 			input: `azure_blob {
 				connection_string "DefaultEndpointsProtocol=https;AccountName=test"
+				encryption_key 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
 				container my-certs
 				prefix staging
 				lease_duration 45
@@ -29,6 +30,9 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				}
 				if s.Container != "my-certs" {
 					t.Errorf("Container = %q", s.Container)
+				}
+				if s.EncryptionKey != "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" {
+					t.Errorf("EncryptionKey = %q", s.EncryptionKey)
 				}
 				if s.Prefix != "staging" {
 					t.Errorf("Prefix = %q", s.Prefix)

@@ -26,6 +26,7 @@ xcaddy build --with github.com/lnr0626/certmagic-azureblob
 {
     storage azure_blob {
         connection_string {env.AZURE_STORAGE_CONNECTION_STRING}
+        encryption_key    {env.CADDY_CERT_ENCRYPTION_KEY}
         container          caddy-certs
         prefix             production
         lease_duration     30
@@ -46,6 +47,7 @@ example.com {
   "storage": {
     "module": "azure_blob",
     "connection_string": "{env.AZURE_STORAGE_CONNECTION_STRING}",
+    "encryption_key": "{env.CADDY_CERT_ENCRYPTION_KEY}",
     "container": "caddy-certs",
     "prefix": "production",
     "lease_duration": 30,
@@ -60,6 +62,7 @@ example.com {
 | Option | Default | Description |
 |---|---|---|
 | `connection_string` | *(required)* | Azure Storage connection string |
+| `encryption_key` | *(none)* | Optional hex-encoded 32-byte AES-256-GCM key for client-side encryption |
 | `container` | `caddy-certs` | Blob container name |
 | `prefix` | *(none)* | Optional path prefix for all blob names within the container |
 | `lease_duration` | `30` | Blob lease duration in seconds (15–60). Controls crash recovery time |
