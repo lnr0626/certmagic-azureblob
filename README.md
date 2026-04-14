@@ -22,6 +22,8 @@ xcaddy build --with github.com/lnr0626/certmagic-azureblob
 
 ### Caddyfile
 
+#### Using a connection string (account-level access)
+
 ```caddyfile
 {
     storage azure_blob {
@@ -34,11 +36,25 @@ xcaddy build --with github.com/lnr0626/certmagic-azureblob
         create_container   false
     }
 }
+```
 
-example.com {
-    respond "Hello, TLS!"
+#### Using a container SAS URL (least-privilege, recommended)
+
+```caddyfile
+{
+    storage azure_blob {
+        container_sas_url {env.CADDY_CERTS_SAS_URL}
+        encryption_key    {env.CADDY_CERT_ENCRYPTION_KEY}
+        container          staging-caddy-certs
+        prefix             production
+        lease_duration     30
+    }
 }
 ```
+
+The `container_sas_url` option restricts access to a single container with only the
+permissions granted by the SAS token. This is the recommended auth method when you
+pre-provision the container via infrastructure tooling.
 
 ### JSON config
 
@@ -46,13 +62,11 @@ example.com {
 {
   "storage": {
     "module": "azure_blob",
-    "connection_string": "{env.AZURE_STORAGE_CONNECTION_STRING}",
+    "container_sas_url": "{env.CADDY_CERTS_SAS_URL}",
     "encryption_key": "{env.CADDY_CERT_ENCRYPTION_KEY}",
-    "container": "caddy-certs",
+    "container": "staging-caddy-certs",
     "prefix": "production",
-    "lease_duration": 30,
-    "clean_lock_blobs": true,
-    "create_container": false
+    "lease_duration": 30
   }
 }
 ```
@@ -61,7 +75,8 @@ example.com {
 
 | Option | Default | Description |
 |---|---|---|
-| `connection_string` | *(required)* | Azure Storage connection string |
+| `connection_string` | *(none)* | Azure Storage account connection string. Mutually exclusive with `container_sas_url` |
+| `container_sas_url` | *(none)* | Container-scoped SAS URL for least-privilege access. Mutually exclusive with `connection_string`. Recommended for production |
 | `encryption_key` | *(none)* | Optional hex-encoded 32-byte AES-256-GCM key for client-side encryption |
 | `container` | `caddy-certs` | Blob container name |
 | `prefix` | *(none)* | Optional path prefix for all blob names within the container |
@@ -158,10 +173,43 @@ az storage account show-connection-string \
 
 ### Permissions
 
-The connection string (or future auth method) needs:
-- **Storage Blob Data Contributor** role on the container (or storage account)
+#### Connection string
 
-If `create_container` is `true` (the default), the identity also needs permission to create containers on the storage account. For tighter RBAC, pre-create the container and set `create_container false`:
+The connection string provides account-level access. If `create_container` is `true` (the default), the identity also needs permission to create containers. For tighter RBAC, pre-create the container and set `create_container false`.
+
+#### Container SAS URL (recommended)
+
+A container SAS URL restricts access to a single container. Required SAS permissions:
+
+- **Read** (`r`) — load certificates, keys, and lock blobs
+- **Write** (`w`) — store certificates/keys, acquire/renew blob leases
+- **Delete** (`d`) — delete certificates/keys, break blob leases
+- **List** (`l`) — list blobs for directory semantics
+
+Generate a SAS with a stored access policy for revocability:
+
+```bash
+# Create a stored access policy
+az storage container policy create \
+  --container-name caddy-certs \
+  --account-name caddycerts \
+  --name caddy-rw \
+  --permissions rwdl \
+  --expiry "$(date -u -v+2y '+%Y-%m-%dT%H:%M:%SZ')"
+
+# Generate a SAS URL from the policy
+ACCOUNT="caddycerts"
+CONTAINER="caddy-certs"
+SAS=$(az storage container generate-sas \
+  --account-name "$ACCOUNT" \
+  --name "$CONTAINER" \
+  --policy-name caddy-rw \
+  --https-only \
+  -o tsv)
+echo "https://${ACCOUNT}.blob.core.windows.net/${CONTAINER}?${SAS}"
+```
+
+Pre-create the container since SAS tokens can't create containers:
 
 ```bash
 az storage container create \

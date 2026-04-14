@@ -21,8 +21,15 @@ func init() {
 // It supports distributed locking via Azure Blob Leases, making it suitable
 // for Caddy clusters that share TLS certificates.
 type AzureBlobStorage struct {
-	// ConnectionString is the Azure Storage connection string.
+	// ConnectionString is the Azure Storage account connection string.
+	// Provides account-level access. Mutually exclusive with ContainerSASURL.
 	ConnectionString string `json:"connection_string,omitempty"`
+
+	// ContainerSASURL is a container-scoped SAS URL for least-privilege access.
+	// Restricts the plugin to a single container with only the permissions
+	// granted by the SAS token. Mutually exclusive with ConnectionString.
+	// Example: https://<account>.blob.core.windows.net/<container>?<sas-params>
+	ContainerSASURL string `json:"container_sas_url,omitempty"`
 
 	// EncryptionKey is an optional hex-encoded 32-byte AES-256-GCM key.
 	EncryptionKey string `json:"encryption_key,omitempty"`
@@ -70,6 +77,7 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 	// in Caddyfiles, but {env.VAR} should also work.
 	repl := caddy.NewReplacer()
 	s.ConnectionString = repl.ReplaceAll(s.ConnectionString, "")
+	s.ContainerSASURL = repl.ReplaceAll(s.ContainerSASURL, "")
 	s.EncryptionKey = repl.ReplaceAll(s.EncryptionKey, "")
 	s.Container = repl.ReplaceAll(s.Container, "")
 	s.Prefix = repl.ReplaceAll(s.Prefix, "")
@@ -78,14 +86,27 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 		s.Container = "caddy-certs"
 	}
 
-	s.client = &ConnStringProvider{
-		ConnectionString: s.ConnectionString,
-		SkipEnsure:       !s.createContainer(),
+	// Choose client provider based on auth method
+	if s.ContainerSASURL != "" {
+		s.client = &SASClientProvider{
+			ContainerSASURL:   s.ContainerSASURL,
+			ExpectedContainer: s.Container,
+		}
+	} else {
+		s.client = &ConnStringProvider{
+			ConnectionString: s.ConnectionString,
+			SkipEnsure:       !s.createContainer(),
+		}
 	}
 
+	authMethod := "connection_string"
+	if s.ContainerSASURL != "" {
+		authMethod = "container_sas_url"
+	}
 	s.logger.Info("azure blob storage provisioned",
 		zap.String("container", s.Container),
 		zap.String("prefix", s.Prefix),
+		zap.String("auth_method", authMethod),
 		zap.Int32("lease_duration", s.leaseDuration()),
 	)
 	if s.encryptionEnabled() {
@@ -98,8 +119,13 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 // Validate checks that the configuration is valid and Azure is reachable.
 // Called by Caddy after Provision, before the module is used.
 func (s *AzureBlobStorage) Validate() error {
-	if s.ConnectionString == "" {
-		return fmt.Errorf("connection_string is required")
+	hasConnStr := s.ConnectionString != ""
+	hasSASURL := s.ContainerSASURL != ""
+	if hasConnStr && hasSASURL {
+		return fmt.Errorf("connection_string and container_sas_url are mutually exclusive — use one or the other")
+	}
+	if !hasConnStr && !hasSASURL {
+		return fmt.Errorf("either connection_string or container_sas_url is required")
 	}
 	if _, err := s.parseEncryptionKey(); err != nil {
 		return err
@@ -131,8 +157,9 @@ func (s *AzureBlobStorage) CertMagicStorage() (certmagic.Storage, error) {
 // UnmarshalCaddyfile parses the Caddyfile configuration for this module.
 //
 //	storage azure_blob {
-//	    connection_string "{$AZURE_STORAGE_CONNECTION_STRING}"
-//	    encryption_key    "{env.CADDY_CERT_ENCRYPTION_KEY}"
+//	    connection_string  "{$AZURE_STORAGE_CONNECTION_STRING}"
+//	    container_sas_url  "{$CADDY_CERTS_SAS_URL}"
+//	    encryption_key     "{env.CADDY_CERT_ENCRYPTION_KEY}"
 //	    container          caddy-certs
 //	    prefix             ""
 //	    lease_duration     30
@@ -149,6 +176,12 @@ func (s *AzureBlobStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.ArgErr()
 			}
 			s.ConnectionString = d.Val()
+
+		case "container_sas_url":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			s.ContainerSASURL = d.Val()
 
 		case "container":
 			if !d.NextArg() {
@@ -199,8 +232,11 @@ func (s *AzureBlobStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 		}
 	}
 
-	if s.ConnectionString == "" {
-		return d.Err("connection_string is required")
+	if s.ConnectionString != "" && s.ContainerSASURL != "" {
+		return d.Err("connection_string and container_sas_url are mutually exclusive")
+	}
+	if s.ConnectionString == "" && s.ContainerSASURL == "" {
+		return d.Err("either connection_string or container_sas_url is required")
 	}
 
 	return nil
