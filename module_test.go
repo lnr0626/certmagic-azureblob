@@ -70,9 +70,36 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			},
 		},
 		{
-			name: "missing connection string",
+			name: "missing auth method",
 			input: `azure_blob {
 				container my-certs
+			}`,
+			wantErr: true,
+		},
+		{
+			name: "container_sas_url config",
+			input: `azure_blob {
+				container_sas_url "https://sgcerts.blob.core.windows.net/staging-caddy-certs?sp=rwdl&sig=abc"
+			}`,
+			check: func(t *testing.T, s *AzureBlobStorage) {
+				if s.ContainerSASURL != "https://sgcerts.blob.core.windows.net/staging-caddy-certs?sp=rwdl&sig=abc" {
+					t.Errorf("ContainerSASURL = %q", s.ContainerSASURL)
+				}
+				if s.ConnectionString != "" {
+					t.Errorf("ConnectionString should be empty, got %q", s.ConnectionString)
+				}
+			},
+		},
+		{
+			name:    "container_sas_url missing value",
+			input:   "azure_blob {\n\tcontainer_sas_url\n}",
+			wantErr: true,
+		},
+		{
+			name: "both auth methods",
+			input: `azure_blob {
+				connection_string "connstr"
+				container_sas_url "https://test.blob.core.windows.net/c?sig=x"
 			}`,
 			wantErr: true,
 		},
@@ -221,14 +248,28 @@ func TestLockBlobName(t *testing.T) {
 	}
 }
 
-func TestValidateMissingConnectionString(t *testing.T) {
+func TestValidateMissingAuth(t *testing.T) {
 	s := &AzureBlobStorage{}
 	err := s.Validate()
 	if err == nil {
-		t.Fatal("expected error for empty connection_string")
+		t.Fatal("expected error for empty auth")
 	}
-	if !strings.Contains(err.Error(), "connection_string is required") {
-		t.Errorf("error = %q, want to contain 'connection_string is required'", err.Error())
+	if !strings.Contains(err.Error(), "either connection_string or container_sas_url is required") {
+		t.Errorf("error = %q, want to contain 'either connection_string or container_sas_url is required'", err.Error())
+	}
+}
+
+func TestValidateMutuallyExclusiveAuth(t *testing.T) {
+	s := &AzureBlobStorage{
+		ConnectionString: "connstr",
+		ContainerSASURL:  "https://test.blob.core.windows.net/c?sig=x",
+	}
+	err := s.Validate()
+	if err == nil {
+		t.Fatal("expected error for both auth methods")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error = %q, want to contain 'mutually exclusive'", err.Error())
 	}
 }
 
