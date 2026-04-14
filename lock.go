@@ -228,6 +228,13 @@ func (s *AzureBlobStorage) leaseDuration() int32 {
 	return 30
 }
 
+func (s *AzureBlobStorage) createContainer() bool {
+	if s.CreateContainer != nil {
+		return *s.CreateContainer
+	}
+	return true
+}
+
 // releaseLocks releases all held locks. Called during cleanup/shutdown.
 func (s *AzureBlobStorage) releaseLocks() {
 	var wg sync.WaitGroup

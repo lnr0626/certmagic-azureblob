@@ -30,6 +30,7 @@ xcaddy build --with github.com/lnr0626/certmagic-azureblob
         prefix             production
         lease_duration     30
         clean_lock_blobs
+        create_container   false
     }
 }
 
@@ -48,7 +49,8 @@ example.com {
     "container": "caddy-certs",
     "prefix": "production",
     "lease_duration": 30,
-    "clean_lock_blobs": true
+    "clean_lock_blobs": true,
+    "create_container": false
   }
 }
 ```
@@ -58,10 +60,11 @@ example.com {
 | Option | Default | Description |
 |---|---|---|
 | `connection_string` | *(required)* | Azure Storage connection string |
-| `container` | `caddy-certs` | Blob container name (created automatically if it doesn't exist) |
+| `container` | `caddy-certs` | Blob container name |
 | `prefix` | *(none)* | Optional path prefix for all blob names within the container |
 | `lease_duration` | `30` | Blob lease duration in seconds (15–60). Controls crash recovery time |
 | `clean_lock_blobs` | `false` | Delete lock blobs after releasing the lease. See [Lock blob cleanup](#lock-blob-cleanup) |
+| `create_container` | `true` | Auto-create the container on startup. Set to `false` when pre-provisioned by infra tooling (allows tighter RBAC) |
 
 ## How it works
 
@@ -153,8 +156,16 @@ az storage account show-connection-string \
 ### Permissions
 
 The connection string (or future auth method) needs:
-- **Blob Data Contributor** role on the storage account or container
-- Container create permissions (if auto-create is desired)
+- **Storage Blob Data Contributor** role on the container (or storage account)
+
+If `create_container` is `true` (the default), the identity also needs permission to create containers on the storage account. For tighter RBAC, pre-create the container and set `create_container false`:
+
+```bash
+az storage container create \
+  --name caddy-certs \
+  --account-name caddycerts \
+  --auth-mode login
+```
 
 ## Testing
 

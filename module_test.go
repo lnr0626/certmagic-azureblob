@@ -21,6 +21,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				prefix staging
 				lease_duration 45
 				clean_lock_blobs
+				create_container false
 			}`,
 			check: func(t *testing.T, s *AzureBlobStorage) {
 				if s.ConnectionString != "DefaultEndpointsProtocol=https;AccountName=test" {
@@ -38,6 +39,9 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				if !s.CleanLockBlobs {
 					t.Error("CleanLockBlobs should be true")
 				}
+				if s.createContainer() {
+					t.Error("createContainer() should be false")
+				}
 			},
 		},
 		{
@@ -54,6 +58,9 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				}
 				if s.CleanLockBlobs {
 					t.Error("CleanLockBlobs should default to false")
+				}
+				if !s.createContainer() {
+					t.Error("createContainer() should default to true")
 				}
 			},
 		},
@@ -85,6 +92,14 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			input: `azure_blob {
 				connection_string "connstr"
 				lease_duration 30x
+			}`,
+			wantErr: true,
+		},
+		{
+			name: "invalid create_container value",
+			input: `azure_blob {
+				connection_string "connstr"
+				create_container maybe
 			}`,
 			wantErr: true,
 		},

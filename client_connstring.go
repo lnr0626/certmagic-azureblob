@@ -12,6 +12,7 @@ import (
 // ConnStringProvider implements ClientProvider using an Azure Storage connection string.
 type ConnStringProvider struct {
 	ConnectionString string
+	SkipEnsure       bool
 
 	mu        sync.Mutex
 	service   *service.Client
@@ -25,8 +26,11 @@ func (p *ConnStringProvider) ContainerClient(ctx context.Context, containerName 
 	}
 	client := svc.NewContainerClient(containerName)
 
+	if p.SkipEnsure {
+		return client, nil
+	}
+
 	// Only attempt container creation once per container name.
-	// Hold the mutex across the ensure call to avoid redundant API calls.
 	p.mu.Lock()
 	alreadyEnsured := p.ensured[containerName]
 	if alreadyEnsured {

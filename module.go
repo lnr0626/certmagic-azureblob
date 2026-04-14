@@ -39,6 +39,12 @@ type AzureBlobStorage struct {
 	// better cleanup approach — see README for details.
 	CleanLockBlobs bool `json:"clean_lock_blobs,omitempty"`
 
+	// CreateContainer controls whether the plugin auto-creates the blob container
+	// on startup. Default: true. Set to false when the container is pre-provisioned
+	// by infrastructure tooling, which allows tighter RBAC (no container-create
+	// permission needed).
+	CreateContainer *bool `json:"create_container,omitempty"`
+
 	client ClientProvider
 	locks  sync.Map
 	logger *zap.Logger
@@ -62,6 +68,7 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 
 	s.client = &ConnStringProvider{
 		ConnectionString: s.ConnectionString,
+		SkipEnsure:       !s.createContainer(),
 	}
 
 	s.logger.Info("azure blob storage provisioned",
@@ -111,6 +118,7 @@ func (s *AzureBlobStorage) CertMagicStorage() (certmagic.Storage, error) {
 //	    prefix             ""
 //	    lease_duration     30
 //	    clean_lock_blobs
+//	    create_container   false
 //	}
 func (s *AzureBlobStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	d.Next() // consume the directive name
@@ -150,6 +158,16 @@ func (s *AzureBlobStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 
 		case "clean_lock_blobs":
 			s.CleanLockBlobs = true
+
+		case "create_container":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			val, err := strconv.ParseBool(d.Val())
+			if err != nil {
+				return d.Errf("invalid create_container %q: must be true or false", d.Val())
+			}
+			s.CreateContainer = &val
 
 		default:
 			return d.Errf("unrecognized option: %s", d.Val())
