@@ -1,6 +1,7 @@
 package certmagicazureblob
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -17,6 +18,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			name: "full config",
 			input: `azure_blob {
 				connection_string "DefaultEndpointsProtocol=https;AccountName=test"
+				encryption_key 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
 				container my-certs
 				prefix staging
 				lease_duration 45
@@ -29,6 +31,9 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				}
 				if s.Container != "my-certs" {
 					t.Errorf("Container = %q", s.Container)
+				}
+				if s.EncryptionKey != "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" {
+					t.Errorf("EncryptionKey = %q", s.EncryptionKey)
 				}
 				if s.Prefix != "staging" {
 					t.Errorf("Prefix = %q", s.Prefix)
@@ -111,6 +116,36 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			}`,
 			wantErr: true,
 		},
+		{
+			name:    "connection_string missing value",
+			input:   "azure_blob {\n\tconnection_string\n}",
+			wantErr: true,
+		},
+		{
+			name:    "container missing value",
+			input:   "azure_blob {\n\tconnection_string \"cs\"\n\tcontainer\n}",
+			wantErr: true,
+		},
+		{
+			name:    "encryption_key missing value",
+			input:   "azure_blob {\n\tconnection_string \"cs\"\n\tencryption_key\n}",
+			wantErr: true,
+		},
+		{
+			name:    "prefix missing value",
+			input:   "azure_blob {\n\tconnection_string \"cs\"\n\tprefix\n}",
+			wantErr: true,
+		},
+		{
+			name:    "lease_duration missing value",
+			input:   "azure_blob {\n\tconnection_string \"cs\"\n\tlease_duration\n}",
+			wantErr: true,
+		},
+		{
+			name:    "create_container missing value",
+			input:   "azure_blob {\n\tconnection_string \"cs\"\n\tcreate_container\n}",
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -183,5 +218,48 @@ func TestLockBlobName(t *testing.T) {
 	s.Prefix = "pfx"
 	if got := s.lockBlobName("mylock"); got != "pfx/locks/mylock" {
 		t.Errorf("lockBlobName with prefix = %q", got)
+	}
+}
+
+func TestValidateMissingConnectionString(t *testing.T) {
+	s := &AzureBlobStorage{}
+	err := s.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty connection_string")
+	}
+	if !strings.Contains(err.Error(), "connection_string is required") {
+		t.Errorf("error = %q, want to contain 'connection_string is required'", err.Error())
+	}
+}
+
+func TestValidateBadEncryptionKey(t *testing.T) {
+	s := &AzureBlobStorage{
+		ConnectionString: "DefaultEndpointsProtocol=http;AccountName=fake",
+		EncryptionKey:    "not-valid-hex",
+	}
+	err := s.Validate()
+	if err == nil {
+		t.Fatal("expected error for bad encryption key")
+	}
+	if !strings.Contains(err.Error(), "invalid encryption_key") {
+		t.Errorf("error = %q, want to contain 'invalid encryption_key'", err.Error())
+	}
+}
+
+func TestCertMagicStorage(t *testing.T) {
+	s := &AzureBlobStorage{}
+	storage, err := s.CertMagicStorage()
+	if err != nil {
+		t.Fatalf("CertMagicStorage: %v", err)
+	}
+	if storage != s {
+		t.Error("CertMagicStorage should return self")
+	}
+}
+
+func TestCleanupWithNoLocks(t *testing.T) {
+	s := &AzureBlobStorage{}
+	if err := s.Cleanup(); err != nil {
+		t.Fatalf("Cleanup: %v", err)
 	}
 }
