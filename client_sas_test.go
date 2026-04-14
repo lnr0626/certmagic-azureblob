@@ -8,8 +8,8 @@ import (
 
 func TestSASClientProvider_WrongContainer(t *testing.T) {
 	p := &SASClientProvider{
-		ContainerSASURL:   "https://sgcerts.blob.core.windows.net/staging-caddy-certs?sp=rwdl&sig=abc",
-		ExpectedContainer: "staging-caddy-certs",
+		ContainerSASURL: "https://sgcerts.blob.core.windows.net/staging-caddy-certs?sp=rwdl&sig=abc",
+		ContainerName:   "staging-caddy-certs",
 	}
 
 	_, err := p.ContainerClient(context.Background(), "other-container")
@@ -22,11 +22,9 @@ func TestSASClientProvider_WrongContainer(t *testing.T) {
 }
 
 func TestSASClientProvider_CorrectContainer(t *testing.T) {
-	// Use a valid-looking SAS URL. The client won't connect, but it should
-	// successfully create the client object.
 	p := &SASClientProvider{
-		ContainerSASURL:   "https://sgcerts.blob.core.windows.net/staging-caddy-certs?sp=rwdl&sv=2021-06-08&sig=fakesig",
-		ExpectedContainer: "staging-caddy-certs",
+		ContainerSASURL: "https://sgcerts.blob.core.windows.net/staging-caddy-certs?sp=rwdl&sv=2021-06-08&sig=fakesig",
+		ContainerName:   "staging-caddy-certs",
 	}
 
 	client, err := p.ContainerClient(context.Background(), "staging-caddy-certs")

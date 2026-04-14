@@ -16,17 +16,16 @@ type SASClientProvider struct {
 	// https://<account>.blob.core.windows.net/<container>?<sas-params>
 	ContainerSASURL string
 
-	// ExpectedContainer is the container name the plugin is configured to use.
-	// Used to validate that the SAS URL matches the expected container.
-	ExpectedContainer string
+	// ContainerName is the container name extracted from the SAS URL during provisioning.
+	ContainerName string
 
 	mu     sync.Mutex
 	client *container.Client
 }
 
 func (p *SASClientProvider) ContainerClient(ctx context.Context, containerName string) (*container.Client, error) {
-	if containerName != p.ExpectedContainer {
-		return nil, fmt.Errorf("container_sas_url is scoped to %q but plugin requested %q — SAS auth only supports a single container", p.ExpectedContainer, containerName)
+	if containerName != p.ContainerName {
+		return nil, fmt.Errorf("container_sas_url is scoped to %q but plugin requested %q — SAS auth only supports a single container", p.ContainerName, containerName)
 	}
 
 	p.mu.Lock()

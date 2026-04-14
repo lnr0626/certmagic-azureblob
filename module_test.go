@@ -80,8 +80,6 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			name: "container_sas_url config",
 			input: `azure_blob {
 				container_sas_url "https://sgcerts.blob.core.windows.net/staging-caddy-certs?sp=rwdl&sig=abc"
-				container staging-caddy-certs
-				create_container false
 			}`,
 			check: func(t *testing.T, s *AzureBlobStorage) {
 				if s.ContainerSASURL != "https://sgcerts.blob.core.windows.net/staging-caddy-certs?sp=rwdl&sig=abc" {
@@ -89,9 +87,6 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				}
 				if s.ConnectionString != "" {
 					t.Errorf("ConnectionString should be empty, got %q", s.ConnectionString)
-				}
-				if s.Container != "staging-caddy-certs" {
-					t.Errorf("Container = %q", s.Container)
 				}
 			},
 		},

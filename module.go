@@ -3,7 +3,9 @@ package certmagicazureblob
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,11 +88,28 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 		s.Container = "caddy-certs"
 	}
 
+	// When using SAS URL, extract the container name from the URL path
+	// and validate it against any explicitly configured container name.
+	if s.ContainerSASURL != "" {
+		parsed, err := url.Parse(s.ContainerSASURL)
+		if err != nil {
+			return fmt.Errorf("invalid container_sas_url: %w", err)
+		}
+		sasContainer := strings.TrimPrefix(parsed.Path, "/")
+		if sasContainer == "" {
+			return fmt.Errorf("container_sas_url must include a container path (e.g. https://account.blob.core.windows.net/container?sas)")
+		}
+		if s.Container != "caddy-certs" && s.Container != sasContainer {
+			return fmt.Errorf("container %q does not match container in SAS URL %q — omit the container directive when using container_sas_url", s.Container, sasContainer)
+		}
+		s.Container = sasContainer
+	}
+
 	// Choose client provider based on auth method
 	if s.ContainerSASURL != "" {
 		s.client = &SASClientProvider{
-			ContainerSASURL:   s.ContainerSASURL,
-			ExpectedContainer: s.Container,
+			ContainerSASURL: s.ContainerSASURL,
+			ContainerName:   s.Container,
 		}
 	} else {
 		s.client = &ConnStringProvider{

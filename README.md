@@ -45,7 +45,6 @@ xcaddy build --with github.com/lnr0626/certmagic-azureblob
     storage azure_blob {
         container_sas_url {env.CADDY_CERTS_SAS_URL}
         encryption_key    {env.CADDY_CERT_ENCRYPTION_KEY}
-        container          staging-caddy-certs
         prefix             production
         lease_duration     30
     }
@@ -53,8 +52,8 @@ xcaddy build --with github.com/lnr0626/certmagic-azureblob
 ```
 
 The `container_sas_url` option restricts access to a single container with only the
-permissions granted by the SAS token. This is the recommended auth method when you
-pre-provision the container via infrastructure tooling.
+permissions granted by the SAS token. The container name is automatically extracted
+from the URL path — no separate `container` directive is needed.
 
 ### JSON config
 
@@ -64,7 +63,6 @@ pre-provision the container via infrastructure tooling.
     "module": "azure_blob",
     "container_sas_url": "{env.CADDY_CERTS_SAS_URL}",
     "encryption_key": "{env.CADDY_CERT_ENCRYPTION_KEY}",
-    "container": "staging-caddy-certs",
     "prefix": "production",
     "lease_duration": 30
   }
@@ -76,7 +74,7 @@ pre-provision the container via infrastructure tooling.
 | Option | Default | Description |
 |---|---|---|
 | `connection_string` | *(none)* | Azure Storage account connection string. Mutually exclusive with `container_sas_url` |
-| `container_sas_url` | *(none)* | Container-scoped SAS URL for least-privilege access. Mutually exclusive with `connection_string`. Recommended for production |
+| `container_sas_url` | *(none)* | Container-scoped SAS URL for least-privilege access. Mutually exclusive with `connection_string`. Container name is extracted from the URL path automatically. Recommended for production |
 | `encryption_key` | *(none)* | Optional hex-encoded 32-byte AES-256-GCM key for client-side encryption |
 | `container` | `caddy-certs` | Blob container name |
 | `prefix` | *(none)* | Optional path prefix for all blob names within the container |
