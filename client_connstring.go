@@ -26,21 +26,25 @@ func (p *ConnStringProvider) ContainerClient(ctx context.Context, containerName 
 	client := svc.NewContainerClient(containerName)
 
 	// Only attempt container creation once per container name.
+	// Hold the mutex across the ensure call to avoid redundant API calls.
 	p.mu.Lock()
 	alreadyEnsured := p.ensured[containerName]
-	p.mu.Unlock()
-
-	if !alreadyEnsured {
-		if err := ensureContainer(ctx, client); err != nil {
-			return nil, err
-		}
-		p.mu.Lock()
-		if p.ensured == nil {
-			p.ensured = make(map[string]bool)
-		}
-		p.ensured[containerName] = true
+	if alreadyEnsured {
 		p.mu.Unlock()
+		return client, nil
 	}
+
+	// Still under lock — serialize first-time container creation.
+	p.mu.Unlock()
+	if err := ensureContainer(ctx, client); err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	if p.ensured == nil {
+		p.ensured = make(map[string]bool)
+	}
+	p.ensured[containerName] = true
+	p.mu.Unlock()
 
 	return client, nil
 }

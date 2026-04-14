@@ -143,8 +143,12 @@ func (s *AzureBlobStorage) Exists(ctx context.Context, key string) bool {
 		MaxResults: &maxResults,
 	})
 	if pager.More() {
-		page, err := pager.NextPage(ctx)
-		if err == nil && len(page.Segment.BlobItems) > 0 {
+		page, listErr := pager.NextPage(ctx)
+		if listErr != nil {
+			// Log but don't fail — Exists should not error, best-effort false.
+			return false
+		}
+		if len(page.Segment.BlobItems) > 0 {
 			return true
 		}
 	}
@@ -251,8 +255,11 @@ func (s *AzureBlobStorage) Stat(ctx context.Context, key string) (certmagic.KeyI
 		MaxResults: &maxResults,
 	})
 	if pager.More() {
-		page, err := pager.NextPage(ctx)
-		if err == nil && len(page.Segment.BlobItems) > 0 {
+		page, listErr := pager.NextPage(ctx)
+		if listErr != nil {
+			return certmagic.KeyInfo{}, fmt.Errorf("listing prefix for stat %q: %w", key, listErr)
+		}
+		if len(page.Segment.BlobItems) > 0 {
 			return certmagic.KeyInfo{
 				Key:        key,
 				IsTerminal: false,

@@ -65,9 +65,10 @@ func (s *AzureBlobStorage) Lock(ctx context.Context, name string) error {
 	for {
 		resp, err := leaseClient.AcquireLease(ctx, duration, nil)
 		if err == nil {
-			if resp.LeaseID != nil {
-				leaseID = *resp.LeaseID
+			if resp.LeaseID == nil || *resp.LeaseID == "" {
+				return fmt.Errorf("acquired lease for %q but received empty lease ID", name)
 			}
+			leaseID = *resp.LeaseID
 			break
 		}
 
@@ -155,7 +156,8 @@ func (s *AzureBlobStorage) Unlock(ctx context.Context, name string) error {
 }
 
 // renewLease periodically renews the lease to keep the lock alive.
-// It runs until the context is cancelled (via Unlock).
+// It runs until the context is cancelled (via Unlock). If renewals fail
+// repeatedly, it logs a warning that the lock may be lost.
 func (s *AzureBlobStorage) renewLease(ctx context.Context, leaseClient *lease.BlobClient, name string, done chan struct{}) {
 	defer close(done)
 
@@ -164,6 +166,8 @@ func (s *AzureBlobStorage) renewLease(ctx context.Context, leaseClient *lease.Bl
 
 	ticker := time.NewTicker(renewInterval)
 	defer ticker.Stop()
+
+	consecutiveFailures := 0
 
 	for {
 		select {
@@ -175,12 +179,27 @@ func (s *AzureBlobStorage) renewLease(ctx context.Context, leaseClient *lease.Bl
 				if ctx.Err() != nil {
 					return // context cancelled during unlock
 				}
-				s.logger.Error("failed to renew lease",
-					zap.String("lock", name),
-					zap.Error(err),
-				)
-				// The lease will expire after the duration, allowing another
-				// instance to acquire it. We keep trying until cancelled.
+				consecutiveFailures++
+				if consecutiveFailures >= 2 {
+					s.logger.Warn("lease renewal failing, lock may be lost",
+						zap.String("lock", name),
+						zap.Int("consecutive_failures", consecutiveFailures),
+						zap.Error(err),
+					)
+				} else {
+					s.logger.Error("failed to renew lease",
+						zap.String("lock", name),
+						zap.Error(err),
+					)
+				}
+			} else {
+				if consecutiveFailures > 0 {
+					s.logger.Info("lease renewal recovered",
+						zap.String("lock", name),
+						zap.Int("previous_failures", consecutiveFailures),
+					)
+				}
+				consecutiveFailures = 0
 			}
 		}
 	}

@@ -74,6 +74,14 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "invalid lease duration non-integer",
+			input: `azure_blob {
+				connection_string "connstr"
+				lease_duration 30x
+			}`,
+			wantErr: true,
+		},
+		{
 			name: "unknown option",
 			input: `azure_blob {
 				connection_string "connstr"

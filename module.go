@@ -1,8 +1,11 @@
 package certmagicazureblob
 
 import (
+	"context"
 	"fmt"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -64,6 +67,23 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 	return nil
 }
 
+// Validate checks that the configuration is valid and Azure is reachable.
+// Called by Caddy after Provision, before the module is used.
+func (s *AzureBlobStorage) Validate() error {
+	if s.ConnectionString == "" {
+		return fmt.Errorf("connection_string is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := s.containerClient(ctx)
+	if err != nil {
+		return fmt.Errorf("azure blob storage validation failed: %w", err)
+	}
+	return nil
+}
+
 // Cleanup releases all held locks and cleans up resources.
 // Called by Caddy during shutdown.
 func (s *AzureBlobStorage) Cleanup() error {
@@ -112,9 +132,9 @@ func (s *AzureBlobStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			if !d.NextArg() {
 				return d.ArgErr()
 			}
-			var dur int
-			if _, err := fmt.Sscanf(d.Val(), "%d", &dur); err != nil {
-				return d.Errf("invalid lease_duration: %v", err)
+			dur, err := strconv.Atoi(d.Val())
+			if err != nil {
+				return d.Errf("invalid lease_duration %q: %v", d.Val(), err)
 			}
 			if dur < 15 || dur > 60 {
 				return d.Errf("lease_duration must be between 15 and 60 seconds, got %d", dur)
@@ -137,6 +157,7 @@ func (s *AzureBlobStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 var (
 	_ caddy.Module          = (*AzureBlobStorage)(nil)
 	_ caddy.Provisioner     = (*AzureBlobStorage)(nil)
+	_ caddy.Validator       = (*AzureBlobStorage)(nil)
 	_ caddy.CleanerUpper    = (*AzureBlobStorage)(nil)
 	_ caddyfile.Unmarshaler = (*AzureBlobStorage)(nil)
 	_ certmagic.Storage     = (*AzureBlobStorage)(nil)

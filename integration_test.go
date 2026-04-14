@@ -414,3 +414,108 @@ func TestLockAutoExpiry(t *testing.T) {
 		t.Fatalf("s2.Unlock: %v", err)
 	}
 }
+
+func TestUnlockAfterLeaseExpiry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow test in short mode")
+	}
+
+	s := testStorage(t)
+	s.LeaseDuration = 15
+	ctx := context.Background()
+	name := "unlock-expired-lock"
+
+	// Acquire the lock, then kill renewal to simulate crash.
+	if err := s.Lock(ctx, name); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	val, _ := s.locks.Load(name)
+	ls := val.(*lockState)
+	ls.cancel()
+	<-ls.done
+
+	// Wait for the lease to expire.
+	t.Log("waiting for lease to expire (15s)...")
+	time.Sleep(16 * time.Second)
+
+	// Unlock after expiry should succeed (not return an error).
+	if err := s.Unlock(ctx, name); err != nil {
+		t.Errorf("Unlock after lease expiry should return nil, got: %v", err)
+	}
+}
+
+func TestLockRenewalKeepsLockAlive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow test in short mode")
+	}
+
+	s1 := testStorage(t)
+	s1.LeaseDuration = 15
+	s2 := &AzureBlobStorage{
+		Container:     s1.Container,
+		client:        s1.client,
+		logger:        zap.NewNop(),
+		LeaseDuration: 15,
+	}
+
+	ctx := context.Background()
+	name := "renewal-lock"
+
+	// s1 acquires a 15s lease. Hold it for 20s (beyond a single lease duration).
+	if err := s1.Lock(ctx, name); err != nil {
+		t.Fatalf("s1.Lock: %v", err)
+	}
+
+	t.Log("holding lock for 20s (beyond 15s lease duration)...")
+	time.Sleep(20 * time.Second)
+
+	// s2 should NOT be able to acquire — renewal should have kept s1's lock alive.
+	ctx2, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	err := s2.Lock(ctx2, name)
+	if err == nil {
+		s2.Unlock(ctx, name)
+		t.Fatal("s2 acquired lock while s1 should still hold it — renewal failed")
+	}
+
+	// Clean up s1's lock.
+	if err := s1.Unlock(ctx, name); err != nil {
+		t.Fatalf("s1.Unlock: %v", err)
+	}
+}
+
+func TestReleaseLocksOnCleanup(t *testing.T) {
+	s := testStorage(t)
+	s.LeaseDuration = 15
+	s2 := &AzureBlobStorage{
+		Container:     s.Container,
+		client:        s.client,
+		logger:        zap.NewNop(),
+		LeaseDuration: 15,
+	}
+
+	ctx := context.Background()
+
+	// Acquire multiple locks.
+	locks := []string{"cleanup-lock-1", "cleanup-lock-2", "cleanup-lock-3"}
+	for _, name := range locks {
+		if err := s.Lock(ctx, name); err != nil {
+			t.Fatalf("Lock %q: %v", name, err)
+		}
+	}
+
+	// releaseLocks should release all of them.
+	s.releaseLocks()
+
+	// s2 should be able to acquire all of them immediately.
+	for _, name := range locks {
+		ctx2, cancel := context.WithTimeout(ctx, 3*time.Second)
+		err := s2.Lock(ctx2, name)
+		cancel()
+		if err != nil {
+			t.Errorf("s2.Lock(%q) after releaseLocks: %v", name, err)
+		} else {
+			s2.Unlock(ctx, name)
+		}
+	}
+}
