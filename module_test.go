@@ -173,6 +173,93 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			input:   "azure_blob {\n\tconnection_string \"cs\"\n\tcreate_container\n}",
 			wantErr: true,
 		},
+		{
+			name: "service principal config",
+			input: `azure_blob {
+				tenant_id "my-tenant"
+				client_id "my-client"
+				client_secret "my-secret"
+				account_url "https://myaccount.blob.core.windows.net"
+				container my-certs
+			}`,
+			check: func(t *testing.T, s *AzureBlobStorage) {
+				if s.TenantID != "my-tenant" {
+					t.Errorf("TenantID = %q", s.TenantID)
+				}
+				if s.ClientID != "my-client" {
+					t.Errorf("ClientID = %q", s.ClientID)
+				}
+				if s.ClientSecret != "my-secret" {
+					t.Errorf("ClientSecret = %q", s.ClientSecret)
+				}
+				if s.AccountURL != "https://myaccount.blob.core.windows.net" {
+					t.Errorf("AccountURL = %q", s.AccountURL)
+				}
+				if s.Container != "my-certs" {
+					t.Errorf("Container = %q", s.Container)
+				}
+			},
+		},
+		{
+			name: "service principal missing account_url",
+			input: `azure_blob {
+				tenant_id "t"
+				client_id "c"
+				client_secret "s"
+			}`,
+			wantErr: true,
+		},
+		{
+			name: "service principal missing client_secret",
+			input: `azure_blob {
+				tenant_id "t"
+				client_id "c"
+				account_url "https://a.blob.core.windows.net"
+			}`,
+			wantErr: true,
+		},
+		{
+			name: "service principal mixed with connection_string",
+			input: `azure_blob {
+				connection_string "connstr"
+				tenant_id "t"
+				client_id "c"
+				client_secret "s"
+				account_url "https://a.blob.core.windows.net"
+			}`,
+			wantErr: true,
+		},
+		{
+			name: "service principal mixed with container_sas_url",
+			input: `azure_blob {
+				container_sas_url "https://a.blob.core.windows.net/c?sig=x"
+				tenant_id "t"
+				client_id "c"
+				client_secret "s"
+				account_url "https://a.blob.core.windows.net"
+			}`,
+			wantErr: true,
+		},
+		{
+			name:    "tenant_id missing value",
+			input:   "azure_blob {\n\ttenant_id\n}",
+			wantErr: true,
+		},
+		{
+			name:    "client_id missing value",
+			input:   "azure_blob {\n\tclient_id\n}",
+			wantErr: true,
+		},
+		{
+			name:    "client_secret missing value",
+			input:   "azure_blob {\n\tclient_secret\n}",
+			wantErr: true,
+		},
+		{
+			name:    "account_url missing value",
+			input:   "azure_blob {\n\taccount_url\n}",
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -254,8 +341,8 @@ func TestValidateMissingAuth(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty auth")
 	}
-	if !strings.Contains(err.Error(), "either connection_string or container_sas_url is required") {
-		t.Errorf("error = %q, want to contain 'either connection_string or container_sas_url is required'", err.Error())
+	if !strings.Contains(err.Error(), "auth method is required") {
+		t.Errorf("error = %q, want to contain 'auth method is required'", err.Error())
 	}
 }
 

@@ -55,6 +55,28 @@ The `container_sas_url` option restricts access to a single container with only 
 permissions granted by the SAS token. The container name is automatically extracted
 from the URL path — no separate `container` directive is needed.
 
+#### Using a service principal (Azure AD)
+
+```caddyfile
+{
+    storage azure_blob {
+        tenant_id      {env.AZURE_TENANT_ID}
+        client_id      {env.AZURE_CLIENT_ID}
+        client_secret  {env.AZURE_CLIENT_SECRET}
+        account_url    https://caddycerts.blob.core.windows.net
+        encryption_key {env.CADDY_CERT_ENCRYPTION_KEY}
+        container      caddy-certs
+        prefix         production
+        lease_duration 30
+        create_container false
+    }
+}
+```
+
+Service principal auth uses Azure AD client credentials. The `account_url` is the
+full blob service endpoint — this supports sovereign clouds (e.g. `.blob.core.chinacloudapi.cn`),
+private endpoints, and Azurite for local testing.
+
 ### JSON config
 
 ```json
@@ -73,8 +95,12 @@ from the URL path — no separate `container` directive is needed.
 
 | Option | Default | Description |
 |---|---|---|
-| `connection_string` | *(none)* | Azure Storage account connection string. Mutually exclusive with `container_sas_url` |
-| `container_sas_url` | *(none)* | Container-scoped SAS URL for least-privilege access. Mutually exclusive with `connection_string`. Container name is extracted from the URL path automatically. Recommended for production |
+| `connection_string` | *(none)* | Azure Storage account connection string. Mutually exclusive with other auth methods |
+| `container_sas_url` | *(none)* | Container-scoped SAS URL for least-privilege access. Mutually exclusive with other auth methods. Container name is extracted from the URL path automatically |
+| `tenant_id` | *(none)* | Azure AD tenant ID for service principal auth. Requires `client_id`, `client_secret`, and `account_url` |
+| `client_id` | *(none)* | Azure AD application (client) ID for service principal auth |
+| `client_secret` | *(none)* | Azure AD client secret for service principal auth |
+| `account_url` | *(none)* | Azure Blob Storage service URL for service principal auth (e.g. `https://myaccount.blob.core.windows.net`). Supports sovereign clouds, private endpoints, and Azurite |
 | `encryption_key` | *(none)* | Optional hex-encoded 32-byte AES-256-GCM key for client-side encryption |
 | `container` | `caddy-certs` | Blob container name |
 | `prefix` | *(none)* | Optional path prefix for all blob names within the container |
@@ -215,6 +241,32 @@ az storage container create \
   --account-name caddycerts \
   --auth-mode login
 ```
+
+#### Service principal
+
+Create an Azure AD app registration and assign the **Storage Blob Data Contributor** role
+on the storage account (or container, for tighter scoping):
+
+```bash
+# Create the app registration and service principal
+az ad app create --display-name caddy-certs-sp
+APP_ID=$(az ad app list --display-name caddy-certs-sp --query '[0].appId' -o tsv)
+az ad sp create --id "$APP_ID"
+
+# Create a client secret
+az ad app credential reset --id "$APP_ID" --query password -o tsv
+
+# Assign Storage Blob Data Contributor on the storage account
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+az role assignment create \
+  --assignee "$APP_ID" \
+  --role "Storage Blob Data Contributor" \
+  --scope "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/mygroup/providers/Microsoft.Storage/storageAccounts/caddycerts"
+```
+
+If `create_container` is `true`, the principal also needs container-create permission
+(included in Storage Blob Data Contributor). For tighter RBAC, pre-create the container
+and set `create_container false`.
 
 ## Testing
 
