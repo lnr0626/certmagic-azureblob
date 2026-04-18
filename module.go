@@ -94,6 +94,19 @@ const (
 	authServicePrincipal          // tenant_id + client_id + client_secret + account_url
 )
 
+func (m authMode) String() string {
+	switch m {
+	case authConnectionString:
+		return "connection_string"
+	case authContainerSAS:
+		return "container_sas_url"
+	case authServicePrincipal:
+		return "service_principal"
+	default:
+		return "unknown"
+	}
+}
+
 // detectAuthMode determines the configured auth method and returns an error
 // if the configuration is invalid (no auth, multiple auth methods, or
 // incomplete service principal fields). This is the single source of truth
@@ -209,25 +222,16 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 			ContainerName:   s.Container,
 		}
 	case authServicePrincipal:
-		s.client = &ServicePrincipalProvider{
-			AccountURL:   s.AccountURL,
-			TenantID:     s.TenantID,
-			ClientID:     s.ClientID,
-			ClientSecret: s.ClientSecret,
-			SkipEnsure:   !s.createContainer(),
-		}
+		s.client = NewServicePrincipalProvider(s.AccountURL, s.TenantID, s.ClientID, s.ClientSecret, !s.createContainer())
 	default:
-		s.client = &ConnStringProvider{
-			ConnectionString: s.ConnectionString,
-			SkipEnsure:       !s.createContainer(),
-		}
+		s.client = NewConnStringProvider(s.ConnectionString, !s.createContainer())
 	}
 
-	authMethodName := [...]string{"none", "connection_string", "container_sas_url", "service_principal"}
+	authMethodName := mode.String()
 	s.logger.Info("azure blob storage provisioned",
 		zap.String("container", s.Container),
 		zap.String("prefix", s.Prefix),
-		zap.String("auth_method", authMethodName[mode]),
+		zap.String("auth_method", authMethodName),
 		zap.Int32("lease_duration", s.leaseDuration()),
 	)
 	if s.encryptionEnabled() {

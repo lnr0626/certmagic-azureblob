@@ -7,13 +7,13 @@ import (
 )
 
 func TestServicePrincipalProvider_CreatesClient(t *testing.T) {
-	p := &ServicePrincipalProvider{
-		AccountURL:   "https://sgcerts.blob.core.windows.net",
-		TenantID:     "fake-tenant-id",
-		ClientID:     "fake-client-id",
-		ClientSecret: "fake-client-secret",
-		SkipEnsure:   true,
-	}
+	p := NewServicePrincipalProvider(
+		"https://sgcerts.blob.core.windows.net",
+		"fake-tenant-id",
+		"fake-client-id",
+		"fake-client-secret",
+		true, // skipEnsure
+	)
 
 	// The provider creates a client eagerly on first call.
 	// With fake credentials, the client is still constructed — auth
@@ -39,28 +39,28 @@ func TestServicePrincipalProvider_CreatesClient(t *testing.T) {
 func TestDetectAuthMode(t *testing.T) {
 	tests := []struct {
 		name     string
-		storage  AzureBlobStorage
+		storage  *AzureBlobStorage
 		wantMode authMode
 		wantErr  string
 	}{
 		{
 			name:    "no auth",
-			storage: AzureBlobStorage{},
+			storage: &AzureBlobStorage{},
 			wantErr: "auth method is required",
 		},
 		{
 			name:     "connection string only",
-			storage:  AzureBlobStorage{ConnectionString: "cs"},
+			storage:  &AzureBlobStorage{ConnectionString: "cs"},
 			wantMode: authConnectionString,
 		},
 		{
 			name:     "container SAS URL only",
-			storage:  AzureBlobStorage{ContainerSASURL: "https://a.blob.core.windows.net/c?sig=x"},
+			storage:  &AzureBlobStorage{ContainerSASURL: "https://a.blob.core.windows.net/c?sig=x"},
 			wantMode: authContainerSAS,
 		},
 		{
 			name: "service principal complete",
-			storage: AzureBlobStorage{
+			storage: &AzureBlobStorage{
 				TenantID:     "t",
 				ClientID:     "c",
 				ClientSecret: "s",
@@ -69,8 +69,17 @@ func TestDetectAuthMode(t *testing.T) {
 			wantMode: authServicePrincipal,
 		},
 		{
+			name: "service principal missing tenant_id",
+			storage: &AzureBlobStorage{
+				ClientID:     "c",
+				ClientSecret: "s",
+				AccountURL:   "https://a.blob.core.windows.net",
+			},
+			wantErr: "missing: tenant_id",
+		},
+		{
 			name: "service principal missing client_secret",
-			storage: AzureBlobStorage{
+			storage: &AzureBlobStorage{
 				TenantID:   "t",
 				ClientID:   "c",
 				AccountURL: "https://a.blob.core.windows.net",
@@ -79,14 +88,14 @@ func TestDetectAuthMode(t *testing.T) {
 		},
 		{
 			name: "service principal missing multiple fields",
-			storage: AzureBlobStorage{
+			storage: &AzureBlobStorage{
 				TenantID: "t",
 			},
 			wantErr: "missing: client_id, client_secret, account_url",
 		},
 		{
 			name: "connection string and SAS URL conflict",
-			storage: AzureBlobStorage{
+			storage: &AzureBlobStorage{
 				ConnectionString: "cs",
 				ContainerSASURL:  "https://a.blob.core.windows.net/c?sig=x",
 			},
@@ -94,7 +103,7 @@ func TestDetectAuthMode(t *testing.T) {
 		},
 		{
 			name: "connection string and service principal conflict",
-			storage: AzureBlobStorage{
+			storage: &AzureBlobStorage{
 				ConnectionString: "cs",
 				TenantID:         "t",
 				ClientID:         "c",
@@ -104,8 +113,16 @@ func TestDetectAuthMode(t *testing.T) {
 			wantErr: "mutually exclusive",
 		},
 		{
+			name: "partial SP field and connection string conflict",
+			storage: &AzureBlobStorage{
+				ConnectionString: "cs",
+				TenantID:         "t",
+			},
+			wantErr: "mutually exclusive",
+		},
+		{
 			name: "SAS URL and service principal conflict",
-			storage: AzureBlobStorage{
+			storage: &AzureBlobStorage{
 				ContainerSASURL: "https://a.blob.core.windows.net/c?sig=x",
 				TenantID:        "t",
 				ClientID:        "c",
@@ -116,7 +133,7 @@ func TestDetectAuthMode(t *testing.T) {
 		},
 		{
 			name: "all three auth methods conflict",
-			storage: AzureBlobStorage{
+			storage: &AzureBlobStorage{
 				ConnectionString: "cs",
 				ContainerSASURL:  "https://a.blob.core.windows.net/c?sig=x",
 				TenantID:         "t",
