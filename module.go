@@ -13,6 +13,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/certmagic"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func init() {
@@ -265,6 +266,23 @@ func (s *AzureBlobStorage) Validate() error {
 // Called by Caddy during shutdown.
 func (s *AzureBlobStorage) Cleanup() error {
 	s.releaseLocks()
+	return nil
+}
+
+// MarshalLogObject lets zap log this module without reflecting over its JSON
+// tags, which would print the client secret, connection string, SAS URL and
+// encryption key. certmagic logs the storage value at info level.
+func (s *AzureBlobStorage) MarshalLogObject(enc zapcore.ObjectEncoder) error {
+	enc.AddString("module", "azure_blob")
+	enc.AddString("account_url", s.AccountURL)
+	enc.AddString("tenant_id", s.TenantID)
+	enc.AddString("client_id", s.ClientID)
+	enc.AddString("container", s.Container)
+	enc.AddString("prefix", s.Prefix)
+	enc.AddInt32("lease_duration", s.LeaseDuration)
+	enc.AddBool("clean_lock_blobs", s.CleanLockBlobs)
+	enc.AddBool("credentials_configured", s.ConnectionString != "" || s.ContainerSASURL != "" || s.ClientSecret != "")
+	enc.AddBool("encryption_enabled", s.EncryptionKey != "")
 	return nil
 }
 
