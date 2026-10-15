@@ -66,11 +66,17 @@ type AzureBlobStorage struct {
 	// EncryptionKey is an optional hex-encoded 32-byte AES-256-GCM key.
 	EncryptionKey string `json:"encryption_key,omitempty"`
 
-	// AllowLegacyBlobs permits reading blobs that were stored unencrypted
-	// before encryption_key was set. It is off by default because anyone able
-	// to write to the container could otherwise plant unencrypted
-	// certificates and keys. Enable it only while migrating, then disable it.
-	AllowLegacyBlobs bool `json:"allow_legacy_blobs,omitempty"`
+	// EncryptionMode controls how blobs that are not in the current
+	// authenticated format are handled when EncryptionKey is set:
+	//
+	//   - "compatible" (default): read current-format and original-format
+	//     encrypted blobs; reject unencrypted blobs. Old blobs are upgraded
+	//     as certmagic rewrites them.
+	//   - "strict": read only current-format blobs. Anything else is rejected.
+	//   - "migrate": additionally accept unencrypted blobs, and rewrite every
+	//     blob not in the current format at startup. Use once, then switch
+	//     to "strict".
+	EncryptionMode string `json:"encryption_mode,omitempty"`
 
 	// Container is the blob container name. Default: "caddy-certs".
 	Container string `json:"container,omitempty"`
@@ -210,6 +216,7 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 	s.ClientSecret = repl.ReplaceAll(s.ClientSecret, "")
 	s.AccountURL = repl.ReplaceAll(s.AccountURL, "")
 	s.EncryptionKey = repl.ReplaceAll(s.EncryptionKey, "")
+	s.EncryptionMode = repl.ReplaceAll(s.EncryptionMode, "")
 	s.Container = repl.ReplaceAll(s.Container, "")
 	s.Prefix = repl.ReplaceAll(s.Prefix, "")
 
@@ -220,6 +227,9 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 	// Re-validate after placeholder resolution (values may differ from parse-time).
 	mode, err := s.detectAuthMode()
 	if err != nil {
+		return err
+	}
+	if _, err := s.validateEncryptionMode(); err != nil {
 		return err
 	}
 
@@ -263,6 +273,9 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 		zap.Int32("lease_duration", s.leaseDuration()),
 	)
 	s.logEncryptionStatus()
+	if s.encryptionMode() == EncryptionModeMigrate {
+		go s.runMigration(ctx)
+	}
 
 	return nil
 }
@@ -282,6 +295,9 @@ func (s *AzureBlobStorage) Validate() error {
 		return err
 	}
 	if _, err := s.parseEncryptionKey(); err != nil {
+		return err
+	}
+	if _, err := s.validateEncryptionMode(); err != nil {
 		return err
 	}
 
@@ -317,7 +333,7 @@ func (s *AzureBlobStorage) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 	enc.AddBool("clean_lock_blobs", s.CleanLockBlobs)
 	enc.AddBool("credentials_configured", s.ConnectionString != "" || s.ContainerSASURL != "" || s.ClientSecret != "")
 	enc.AddBool("encryption_enabled", s.EncryptionKey != "")
-	enc.AddBool("allow_legacy_blobs", s.AllowLegacyBlobs)
+	enc.AddString("encryption_mode", string(s.encryptionMode()))
 	return nil
 }
 
@@ -338,7 +354,7 @@ func (s *AzureBlobStorage) CertMagicStorage() (certmagic.Storage, error) {
 //	    account_url        "https://myaccount.blob.core.windows.net"
 //	    managed_identity
 //	    encryption_key     "{env.CADDY_CERT_ENCRYPTION_KEY}"
-//	    allow_legacy_blobs
+//	    encryption_mode    compatible
 //	    container          caddy-certs
 //	    prefix             ""
 //	    lease_duration     30
@@ -404,11 +420,14 @@ func (s *AzureBlobStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 			s.EncryptionKey = d.Val()
 
-		case "allow_legacy_blobs":
-			if d.CountRemainingArgs() > 0 {
+		case "encryption_mode":
+			if !d.NextArg() {
 				return d.ArgErr()
 			}
-			s.AllowLegacyBlobs = true
+			s.EncryptionMode = d.Val()
+			if _, err := s.validateEncryptionMode(); err != nil {
+				return d.Err(err.Error())
+			}
 
 		case "prefix":
 			if !d.NextArg() {

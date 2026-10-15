@@ -93,11 +93,11 @@ func (s *AzureBlobStorage) decryptLoadedValue(key string, data []byte) ([]byte, 
 		// A blob without the header could have been planted by anyone with
 		// write access to the container, so it is trusted only during an
 		// explicit migration.
-		if !s.AllowLegacyBlobs {
-			return nil, fmt.Errorf("loading key %q: blob is not encrypted but encryption_key is set; set allow_legacy_blobs to migrate blobs stored before encryption was enabled", key)
+		if s.encryptionMode() != EncryptionModeMigrate {
+			return nil, fmt.Errorf("loading key %q: blob is not encrypted but encryption_key is set; use encryption_mode migrate to encrypt blobs stored before encryption was enabled", key)
 		}
 		if s.logger != nil {
-			s.logger.Warn("allow_legacy_blobs: returning unencrypted blob (will be encrypted on next store)",
+			s.logger.Warn("encryption_mode migrate: returning unencrypted blob (will be encrypted on next store)",
 				zap.String("key", key),
 				zap.Int("size", len(data)),
 			)

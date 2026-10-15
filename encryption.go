@@ -27,9 +27,41 @@ const (
 var encryptedBlobMagic = []byte{0x00, 'E', 'N', '2'}
 
 // legacyEncryptedBlobMagic marks the original format, which used no additional
-// data. They are still authenticated by the key, so they remain readable and
-// are rewritten in the current format on the next Store.
+// data. They are still authenticated by the key, so they remain readable
+// (except in strict mode) and are rewritten in the current format on the next
+// Store, or at startup in migrate mode.
 var legacyEncryptedBlobMagic = []byte{0x00, 'E', 'N', 'C'}
+
+// EncryptionMode values for the encryption_mode option.
+type EncryptionMode string
+
+const (
+	EncryptionModeCompatible EncryptionMode = "compatible"
+	EncryptionModeStrict     EncryptionMode = "strict"
+	EncryptionModeMigrate    EncryptionMode = "migrate"
+)
+
+func (s *AzureBlobStorage) encryptionMode() EncryptionMode {
+	if s.EncryptionMode == "" {
+		return EncryptionModeCompatible
+	}
+	return EncryptionMode(s.EncryptionMode)
+}
+
+// validateEncryptionMode rejects unknown modes, and any non-default mode
+// when no encryption_key is configured.
+func (s *AzureBlobStorage) validateEncryptionMode() (EncryptionMode, error) {
+	m := s.encryptionMode()
+	switch m {
+	case EncryptionModeCompatible, EncryptionModeStrict, EncryptionModeMigrate:
+	default:
+		return m, fmt.Errorf("invalid encryption_mode %q: must be compatible, strict or migrate", s.EncryptionMode)
+	}
+	if s.EncryptionMode != "" && !s.encryptionEnabled() {
+		return m, fmt.Errorf("encryption_mode requires encryption_key")
+	}
+	return m, nil
+}
 
 func (s *AzureBlobStorage) aad(key string) []byte {
 	return []byte(s.Container + "\x00" + s.blobName(key))
@@ -92,6 +124,9 @@ func (s *AzureBlobStorage) decrypt(key string, ciphertext []byte) ([]byte, error
 	case bytes.Equal(ciphertext[:len(encryptedBlobMagic)], encryptedBlobMagic):
 		aad = s.aad(key)
 	case bytes.Equal(ciphertext[:len(legacyEncryptedBlobMagic)], legacyEncryptedBlobMagic):
+		if s.encryptionMode() == EncryptionModeStrict {
+			return nil, fmt.Errorf("blob uses the legacy encryption format, which encryption_mode strict rejects; run encryption_mode migrate first")
+		}
 		if s.logger != nil {
 			s.logger.Warn("blob uses the legacy encryption format without key binding; it will be upgraded on next store",
 				zap.String("key", key))

@@ -122,7 +122,7 @@ applications" (Windows). Arc does not support user-assigned identities, so omit 
 | `managed_identity` | `false` | Use managed identity (incl. Azure Arc). Requires `account_url`; `client_id` optionally selects a user-assigned identity |
 | `account_url` | *(none)* | Azure Blob Storage service URL for service principal auth (e.g. `https://myaccount.blob.core.windows.net`). Supports sovereign clouds, private endpoints, and Azurite |
 | `encryption_key` | *(none)* | Optional hex-encoded 32-byte AES-256-GCM key for client-side encryption |
-| `allow_legacy_blobs` | `false` | Migration only: with `encryption_key` set, also accept blobs that were stored unencrypted. Leave off in normal operation — see [Client-side encryption](#client-side-encryption) |
+| `encryption_mode` | `compatible` | With `encryption_key` set: `compatible`, `strict` or `migrate`. See [Client-side encryption](#client-side-encryption) |
 | `container` | `caddy-certs` | Blob container name |
 | `prefix` | *(none)* | Optional path prefix for all blob names within the container |
 | `lease_duration` | `30` | Blob lease duration in seconds (15–60). Controls crash recovery time |
@@ -143,7 +143,17 @@ Without `encryption_key`, certificate private keys and ACME account keys are sto
 
 With `encryption_key` set, every blob is AES-256-GCM encrypted and authenticated against its container and blob name, so a blob copied to another key fails to decrypt. Blobs that are not encrypted are rejected, which stops someone with write access to the container from planting their own certificates or keys.
 
-**Upgrading.** Blobs written by earlier versions (original `ENC` format, no name binding) are still readable and are rewritten in the bound format the next time certmagic stores them; a warning is logged for each one read. Only blobs that were stored *unencrypted* (written before `encryption_key` was set) are rejected. To migrate those, set `allow_legacy_blobs` temporarily and remove it once certmagic has rewritten them.
+`encryption_mode` controls which stored formats are accepted:
+
+| Mode | Current format | Original `ENC` format | Unencrypted | Startup rewrite |
+|---|---|---|---|---|
+| `compatible` (default) | read | read, with a warning | rejected | no — upgraded as certmagic stores them |
+| `strict` | read | rejected | rejected | no |
+| `migrate` | read | read | read | yes — every blob is rewritten in the current format |
+
+**Upgrading.** Existing encrypted blobs keep working in the default `compatible` mode. To finish, run once with `encryption_mode migrate`: at startup one instance (guarded by a lock) rewrites every blob in the current format, and logs `encryption migration complete` when none failed. Then switch to `strict`, which is the only mode that fully stops a ciphertext from being replaced by an older unbound one. Blobs stored unencrypted before `encryption_key` was set can only be loaded in `migrate` mode, and `migrate` trusts them, so use it only while nobody untrusted can write to the container.
+
+Older plugin versions cannot read the current format, so rolling back after a rewrite breaks those blobs.
 
 ### Distributed locking
 

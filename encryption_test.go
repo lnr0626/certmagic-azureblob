@@ -110,9 +110,9 @@ func TestEncryptDecryptNoopWhenKeyNotSet(t *testing.T) {
 
 func TestDecryptLoadedValueFallsBackToPlaintext(t *testing.T) {
 	s := &AzureBlobStorage{
-		EncryptionKey:    testEncryptionKeyHex,
-		AllowLegacyBlobs: true,
-		logger:           zap.NewNop(),
+		EncryptionKey:  testEncryptionKeyHex,
+		EncryptionMode: "migrate",
+		logger:         zap.NewNop(),
 	}
 
 	t.Run("short blob", func(t *testing.T) {
@@ -379,8 +379,8 @@ func TestDecryptLoadedValueSuccessfulDecrypt(t *testing.T) {
 
 func TestDecryptLoadedValueFallbackNilLogger(t *testing.T) {
 	s := &AzureBlobStorage{
-		EncryptionKey:    testEncryptionKeyHex,
-		AllowLegacyBlobs: true,
+		EncryptionKey:  testEncryptionKeyHex,
+		EncryptionMode: "migrate",
 		// logger intentionally nil — verify no panic on fallback path.
 	}
 
@@ -433,11 +433,95 @@ func TestLegacyEncryptedFormat(t *testing.T) {
 
 	got, err := s.decryptLoadedValue("k", legacy)
 	if err != nil || string(got) != "old" {
-		t.Fatalf("legacy encrypted blob must stay readable without allow_legacy_blobs: %q, %v", got, err)
+		t.Fatalf("legacy encrypted blob must stay readable in the default mode: %q, %v", got, err)
 	}
 
 	legacy[len(legacy)-1] ^= 0xff
 	if _, err := s.decryptLoadedValue("k", legacy); err == nil {
 		t.Fatal("tampered legacy blob must fail authentication")
+	}
+}
+
+func legacyBlob(t *testing.T, s *AzureBlobStorage, plaintext string) []byte {
+	t.Helper()
+	rawKey, _ := s.parseEncryptionKey()
+	block, _ := aes.NewCipher(rawKey)
+	aead, _ := cipher.NewGCM(block)
+	nonce := make([]byte, nonceSize)
+	return append(append(append([]byte{}, legacyEncryptedBlobMagic...), nonce...), aead.Seal(nil, nonce, []byte(plaintext), nil)...)
+}
+
+func TestEncryptionModes(t *testing.T) {
+	base := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex, logger: zap.NewNop()}
+	current, err := base.encrypt("k", []byte("v"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := legacyBlob(t, base, "v")
+	plain := []byte("v")
+
+	tests := []struct {
+		mode                         string
+		currentOK, legacyOK, plainOK bool
+	}{
+		{"", true, true, false},
+		{"compatible", true, true, false},
+		{"strict", true, false, false},
+		{"migrate", true, true, true},
+	}
+	for _, tt := range tests {
+		t.Run("mode "+tt.mode, func(t *testing.T) {
+			s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex, EncryptionMode: tt.mode, logger: zap.NewNop()}
+			for name, c := range map[string]struct {
+				data []byte
+				ok   bool
+			}{"current": {current, tt.currentOK}, "legacy": {legacy, tt.legacyOK}, "plain": {plain, tt.plainOK}} {
+				got, err := s.decryptLoadedValue("k", c.data)
+				if c.ok && (err != nil || string(got) != "v") {
+					t.Errorf("%s: got %q, %v; want success", name, got, err)
+				}
+				if !c.ok && err == nil {
+					t.Errorf("%s: want error", name)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateEncryptionMode(t *testing.T) {
+	for _, bad := range []*AzureBlobStorage{
+		{EncryptionKey: testEncryptionKeyHex, EncryptionMode: "bogus"},
+		{EncryptionMode: "strict"},
+	} {
+		if _, err := bad.validateEncryptionMode(); err == nil {
+			t.Errorf("expected error for %+v", bad)
+		}
+	}
+	if _, err := (&AzureBlobStorage{}).validateEncryptionMode(); err != nil {
+		t.Errorf("no key and no mode must be valid: %v", err)
+	}
+}
+
+func TestUpgradeBlob(t *testing.T) {
+	s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex, EncryptionMode: "migrate", logger: zap.NewNop()}
+
+	for name, raw := range map[string][]byte{"plaintext": []byte("secret"), "legacy": legacyBlob(t, s, "secret")} {
+		up, changed, err := s.upgradeBlob("k", raw)
+		if err != nil || !changed {
+			t.Fatalf("%s: changed=%v err=%v", name, changed, err)
+		}
+		strict := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex, EncryptionMode: "strict"}
+		if got, err := strict.decrypt("k", up); err != nil || string(got) != "secret" {
+			t.Fatalf("%s: upgraded blob not readable in strict mode: %q, %v", name, got, err)
+		}
+		if _, changed, _ := s.upgradeBlob("k", up); changed {
+			t.Fatalf("%s: current-format blob must not be rewritten", name)
+		}
+	}
+
+	bad := legacyBlob(t, s, "secret")
+	bad[len(bad)-1] ^= 0xff
+	if _, _, err := s.upgradeBlob("k", bad); err == nil {
+		t.Fatal("tampered legacy blob must not be upgraded")
 	}
 }
