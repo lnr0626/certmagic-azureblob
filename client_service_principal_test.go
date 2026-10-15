@@ -166,3 +166,33 @@ func TestDetectAuthMode(t *testing.T) {
 		})
 	}
 }
+
+func TestManagedIdentityProvider_CreatesClient(t *testing.T) {
+	for _, id := range []string{"", "fake-client-id"} {
+		p := NewManagedIdentityProvider("https://sgcerts.blob.core.windows.net", id, true)
+		c, err := p.ContainerClient(context.Background(), "my-container")
+		if err != nil || c == nil {
+			t.Fatalf("client id %q: client=%v err=%v", id, c, err)
+		}
+	}
+}
+
+func TestDetectAuthMode_ManagedIdentity(t *testing.T) {
+	url := "https://a.blob.core.windows.net"
+	if m, err := (&AzureBlobStorage{ManagedIdentity: true, AccountURL: url}).detectAuthMode(); err != nil || m != authManagedIdentity {
+		t.Fatalf("got %v, %v", m, err)
+	}
+	if m, err := (&AzureBlobStorage{ManagedIdentity: true, AccountURL: url, ClientID: "x"}).detectAuthMode(); err != nil || m != authManagedIdentity {
+		t.Fatalf("got %v, %v", m, err)
+	}
+	for _, s := range []*AzureBlobStorage{
+		{ManagedIdentity: true},
+		{ManagedIdentity: true, AccountURL: url, ClientSecret: "s"},
+		{ManagedIdentity: true, AccountURL: url, TenantID: "t"},
+		{ManagedIdentity: true, AccountURL: url, ConnectionString: "cs"},
+	} {
+		if _, err := s.detectAuthMode(); err == nil {
+			t.Fatalf("expected error for %+v", s)
+		}
+	}
+}

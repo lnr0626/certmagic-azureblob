@@ -54,6 +54,13 @@ type AzureBlobStorage struct {
 	// Supports sovereign clouds, private endpoints, and Azurite.
 	AccountURL string `json:"account_url,omitempty"`
 
+	// --- Auth method 4: managed identity (Azure VM, AKS, Azure Arc) ---
+
+	// ManagedIdentity enables managed identity auth, including Azure Arc-enabled
+	// servers. Requires account_url. client_id optionally selects a
+	// user-assigned identity; tenant_id and client_secret must not be set.
+	ManagedIdentity bool `json:"managed_identity,omitempty"`
+
 	// --- Common options ---
 
 	// EncryptionKey is an optional hex-encoded 32-byte AES-256-GCM key.
@@ -93,6 +100,7 @@ const (
 	authConnectionString          // connection_string
 	authContainerSAS              // container_sas_url
 	authServicePrincipal          // tenant_id + client_id + client_secret + account_url
+	authManagedIdentity           // managed_identity + account_url [+ client_id]
 )
 
 func (m authMode) String() string {
@@ -103,6 +111,8 @@ func (m authMode) String() string {
 		return "container_sas_url"
 	case authServicePrincipal:
 		return "service_principal"
+	case authManagedIdentity:
+		return "managed_identity"
 	default:
 		return "unknown"
 	}
@@ -115,6 +125,15 @@ func (m authMode) String() string {
 func (s *AzureBlobStorage) detectAuthMode() (authMode, error) {
 	hasConnStr := s.ConnectionString != ""
 	hasSASURL := s.ContainerSASURL != ""
+	if s.ManagedIdentity {
+		if hasConnStr || hasSASURL || s.TenantID != "" || s.ClientSecret != "" {
+			return authNone, fmt.Errorf("managed_identity is mutually exclusive with connection_string, container_sas_url, tenant_id and client_secret (client_id may be set to select a user-assigned identity)")
+		}
+		if s.AccountURL == "" {
+			return authNone, fmt.Errorf("managed_identity auth requires account_url")
+		}
+		return authManagedIdentity, nil
+	}
 	hasSP := s.TenantID != "" || s.ClientID != "" || s.ClientSecret != "" || s.AccountURL != ""
 
 	count := 0
@@ -129,7 +148,7 @@ func (s *AzureBlobStorage) detectAuthMode() (authMode, error) {
 	}
 
 	if count == 0 {
-		return authNone, fmt.Errorf("an auth method is required: use connection_string, container_sas_url, or service principal (tenant_id + client_id + client_secret + account_url)")
+		return authNone, fmt.Errorf("an auth method is required: use connection_string, container_sas_url, managed_identity (+ account_url), or service principal (tenant_id + client_id + client_secret + account_url)")
 	}
 	if count > 1 {
 		return authNone, fmt.Errorf("connection_string, container_sas_url, and service principal auth are mutually exclusive — use exactly one")
@@ -224,6 +243,8 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 		}
 	case authServicePrincipal:
 		s.client = NewServicePrincipalProvider(s.AccountURL, s.TenantID, s.ClientID, s.ClientSecret, !s.createContainer())
+	case authManagedIdentity:
+		s.client = NewManagedIdentityProvider(s.AccountURL, s.ClientID, !s.createContainer())
 	default:
 		s.client = NewConnStringProvider(s.ConnectionString, !s.createContainer())
 	}
@@ -280,6 +301,7 @@ func (s *AzureBlobStorage) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 	enc.AddString("container", s.Container)
 	enc.AddString("prefix", s.Prefix)
 	enc.AddInt32("lease_duration", s.LeaseDuration)
+	enc.AddBool("managed_identity", s.ManagedIdentity)
 	enc.AddBool("clean_lock_blobs", s.CleanLockBlobs)
 	enc.AddBool("credentials_configured", s.ConnectionString != "" || s.ContainerSASURL != "" || s.ClientSecret != "")
 	enc.AddBool("encryption_enabled", s.EncryptionKey != "")
@@ -301,6 +323,7 @@ func (s *AzureBlobStorage) CertMagicStorage() (certmagic.Storage, error) {
 //	    client_id          "{$AZURE_CLIENT_ID}"
 //	    client_secret      "{$AZURE_CLIENT_SECRET}"
 //	    account_url        "https://myaccount.blob.core.windows.net"
+//	    managed_identity
 //	    encryption_key     "{env.CADDY_CERT_ENCRYPTION_KEY}"
 //	    container          caddy-certs
 //	    prefix             ""
@@ -342,6 +365,12 @@ func (s *AzureBlobStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.ArgErr()
 			}
 			s.ClientSecret = d.Val()
+
+		case "managed_identity":
+			if d.CountRemainingArgs() > 0 {
+				return d.ArgErr()
+			}
+			s.ManagedIdentity = true
 
 		case "account_url":
 			if !d.NextArg() {

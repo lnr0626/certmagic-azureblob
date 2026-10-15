@@ -77,6 +77,25 @@ Service principal auth uses Azure AD client credentials. The `account_url` is th
 full blob service endpoint — this supports sovereign clouds (e.g. `.blob.core.chinacloudapi.cn`),
 private endpoints, and Azurite for local testing.
 
+#### Using a managed identity (Azure VM, AKS, Azure Arc)
+
+```caddyfile
+{
+    storage azure_blob {
+        managed_identity
+        account_url https://caddycerts.blob.core.windows.net
+        # client_id {env.AZURE_CLIENT_ID}   # optional: user-assigned identity (not supported on Arc)
+    }
+}
+```
+
+Works with any managed identity source supported by `azidentity`, including
+**Azure Arc-enabled servers** (via the Connected Machine agent's
+`IDENTITY_ENDPOINT`). Grant the machine's identity **Storage Blob Data Contributor**
+on the storage account. On Arc, the Caddy user must be able to read the agent's
+key files: add it to the `himds` group (Linux) or "Hybrid agent extension
+applications" (Windows). Arc does not support user-assigned identities, so omit `client_id` there. For Arc-enabled Kubernetes use workload identity instead.
+
 ### JSON config
 
 ```json
@@ -100,6 +119,7 @@ private endpoints, and Azurite for local testing.
 | `tenant_id` | *(none)* | Azure AD tenant ID for service principal auth. Requires `client_id`, `client_secret`, and `account_url` |
 | `client_id` | *(none)* | Azure AD application (client) ID for service principal auth |
 | `client_secret` | *(none)* | Azure AD client secret for service principal auth |
+| `managed_identity` | `false` | Use managed identity (incl. Azure Arc). Requires `account_url`; `client_id` optionally selects a user-assigned identity |
 | `account_url` | *(none)* | Azure Blob Storage service URL for service principal auth (e.g. `https://myaccount.blob.core.windows.net`). Supports sovereign clouds, private endpoints, and Azurite |
 | `encryption_key` | *(none)* | Optional hex-encoded 32-byte AES-256-GCM key for client-side encryption |
 | `container` | `caddy-certs` | Blob container name |
@@ -274,6 +294,16 @@ and set `create_container false`.
 
 ```bash
 go test -v ./...
+```
+
+### Azure Arc test (requires Docker)
+
+Emulates an Arc-enabled machine (fake Connected Machine agent issuing tokens via the
+Arc key-file challenge, plus HTTPS Azurite with OAuth) and runs the managed identity path:
+
+```bash
+docker compose -f docker/arc/docker-compose.yml run --rm tests
+docker compose -f docker/arc/docker-compose.yml down -v
 ```
 
 ### Integration tests (requires Azurite)
