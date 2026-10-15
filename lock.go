@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -21,6 +22,7 @@ type lockState struct {
 	leaseID string
 	cancel  context.CancelFunc
 	done    chan struct{} // closed when the renewal goroutine exits
+	lost    atomic.Bool   // set when the lease is known or presumed to have expired
 }
 
 // Lock acquires a distributed lock for the given name. It blocks until the lock
@@ -103,7 +105,7 @@ func (s *AzureBlobStorage) Lock(ctx context.Context, name string) error {
 	}
 	s.locks.Store(name, ls)
 
-	go s.renewLease(renewCtx, leaseClient, name, done)
+	go s.renewLease(renewCtx, leaseClient, name, ls)
 
 	s.logger.Debug("lock acquired", zap.String("lock", name), zap.String("lease_id", leaseID))
 	return nil
@@ -121,6 +123,7 @@ func (s *AzureBlobStorage) Unlock(ctx context.Context, name string) error {
 	// Stop the renewal goroutine and wait for it to exit.
 	ls.cancel()
 	<-ls.done
+	lost := ls.lost.Load()
 
 	// Release the lease. Create a new lease client with the lease ID
 	// so the SDK includes it in the release request.
@@ -146,6 +149,9 @@ func (s *AzureBlobStorage) Unlock(ctx context.Context, name string) error {
 				zap.String("lock", name),
 				zap.Error(err),
 			)
+			if lost {
+				return fmt.Errorf("%w: %q", ErrLockLost, name)
+			}
 			return nil
 		}
 		return fmt.Errorf("releasing lease for %q: %w", name, err)
@@ -169,9 +175,11 @@ func (s *AzureBlobStorage) Unlock(ctx context.Context, name string) error {
 
 // renewLease periodically renews the lease to keep the lock alive.
 // It runs until the context is cancelled (via Unlock). If renewals fail
-// repeatedly, it logs a warning that the lock may be lost.
-func (s *AzureBlobStorage) renewLease(ctx context.Context, leaseClient *lease.BlobClient, name string, done chan struct{}) {
-	defer close(done)
+// repeatedly, it logs a warning that the lock may be lost. Once the lease is
+// known or presumed expired it logs an error and flags the lock, and Unlock
+// returns ErrLockLost.
+func (s *AzureBlobStorage) renewLease(ctx context.Context, leaseClient *lease.BlobClient, name string, ls *lockState) {
+	defer close(ls.done)
 
 	// Renew at ~2/3 of the lease duration to have a comfortable safety margin.
 	renewInterval := time.Duration(s.leaseDuration()) * time.Second * 2 / 3
@@ -180,6 +188,8 @@ func (s *AzureBlobStorage) renewLease(ctx context.Context, leaseClient *lease.Bl
 	defer ticker.Stop()
 
 	consecutiveFailures := 0
+	lastRenewed := time.Now()
+	leaseTTL := time.Duration(s.leaseDuration()) * time.Second
 
 	for {
 		select {
@@ -192,6 +202,13 @@ func (s *AzureBlobStorage) renewLease(ctx context.Context, leaseClient *lease.Bl
 					return // context cancelled during unlock
 				}
 				consecutiveFailures++
+				if leaseLost(err, time.Since(lastRenewed), leaseTTL) && ls.lost.CompareAndSwap(false, true) {
+					s.logger.Error("lease lost: another instance may now hold this lock; the critical section is no longer exclusive",
+						zap.String("lock", name),
+						zap.Duration("since_last_renewal", time.Since(lastRenewed)),
+						zap.Error(err),
+					)
+				}
 				if consecutiveFailures >= 2 {
 					s.logger.Warn("lease renewal failing, lock may be lost",
 						zap.String("lock", name),
@@ -212,9 +229,21 @@ func (s *AzureBlobStorage) renewLease(ctx context.Context, leaseClient *lease.Bl
 					)
 				}
 				consecutiveFailures = 0
+				lastRenewed = time.Now()
 			}
 		}
 	}
+}
+
+// leaseLost reports whether a failed renewal means the lease can no longer be
+// relied on: Azure says we no longer own it, or it has gone unrenewed for a
+// full lease duration and so has expired on the service side.
+func leaseLost(err error, sinceRenewed, leaseTTL time.Duration) bool {
+	return isStorageError(err, "LeaseIdMismatchWithLeaseOperation") ||
+		isStorageError(err, "LeaseLost") ||
+		isStorageError(err, "LeaseNotPresentWithLeaseOperation") ||
+		isBlobNotFound(err) ||
+		sinceRenewed >= leaseTTL
 }
 
 func (s *AzureBlobStorage) lockBlobName(name string) string {

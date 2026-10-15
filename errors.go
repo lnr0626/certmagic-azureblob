@@ -8,6 +8,10 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 )
 
+// ErrLockLost is returned by Unlock when the lock's lease expired or was taken
+// over while the lock was held, so the critical section was not exclusive.
+var ErrLockLost = errors.New("lock lease was lost while held")
+
 // isStorageError checks if an error is an Azure storage error with the given code.
 func isStorageError(err error, code bloberror.Code) bool {
 	return bloberror.HasCode(err, code)

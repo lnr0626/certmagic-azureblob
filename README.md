@@ -166,6 +166,8 @@ When CertMagic needs to acquire a lock (e.g., for certificate renewal), the plug
 
 If a Caddy instance crashes, the lease expires automatically after `lease_duration` seconds, allowing another instance to acquire the lock.
 
+If the lease cannot be renewed for a full lease duration, or Azure reports it is no longer held, the plugin logs an error and `Unlock` returns `ErrLockLost`, because another instance may have entered the critical section. CertMagic's `Locker` interface has no way to interrupt the holder, so keep `lease_duration` comfortably above your worst-case network stalls.
+
 ### Lease duration tradeoffs
 
 | Duration | Crash recovery time | Renewal safety margin |
