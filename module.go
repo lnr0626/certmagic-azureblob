@@ -256,11 +256,17 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 		zap.String("auth_method", authMethodName),
 		zap.Int32("lease_duration", s.leaseDuration()),
 	)
-	if s.encryptionEnabled() {
-		s.logger.Info("azure blob storage client-side encryption enabled")
-	}
+	s.logEncryptionStatus()
 
 	return nil
+}
+
+func (s *AzureBlobStorage) logEncryptionStatus() {
+	if s.encryptionEnabled() {
+		s.logger.Info("azure blob storage client-side encryption enabled")
+		return
+	}
+	s.logger.Warn("azure blob storage client-side encryption is disabled: ACME account keys and certificate private keys are stored as plaintext blobs; set encryption_key and restrict read access to the container")
 }
 
 // Validate checks that the configuration is valid and Azure is reachable.

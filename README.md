@@ -134,6 +134,10 @@ applications" (Windows). Arc does not support user-assigned identities, so omit 
 
 CertMagic keys (e.g., `certificates/acme-v02.api.letsencrypt.org-directory/example.com/example.com.crt`) are mapped directly to Azure blob names within the configured container. An optional prefix namespaces all blobs.
 
+### Private key confidentiality
+
+Without `encryption_key`, certificate private keys and ACME account keys are stored as plaintext blobs, so anyone who can read the container (a leaked SAS URL, a reader role, a connection string) can download every key. The plugin logs a warning at startup when encryption is off. Set `encryption_key` and grant only the permissions listed under [Permissions](#permissions).
+
 ### Distributed locking
 
 When CertMagic needs to acquire a lock (e.g., for certificate renewal), the plugin:
