@@ -2,6 +2,8 @@ package certmagicazureblob
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"fmt"
 	"strings"
 	"sync"
@@ -16,7 +18,7 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex}
 	plaintext := []byte("certificate-private-key-material")
 
-	encrypted, err := s.encrypt(plaintext)
+	encrypted, err := s.encrypt("k", plaintext)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -24,7 +26,7 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 		t.Fatal("encrypted output should differ from plaintext")
 	}
 
-	decrypted, err := s.decrypt(encrypted)
+	decrypted, err := s.decrypt("k", encrypted)
 	if err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
@@ -37,11 +39,11 @@ func TestEncryptUsesDifferentNonces(t *testing.T) {
 	s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex}
 	plaintext := []byte("same input")
 
-	first, err := s.encrypt(plaintext)
+	first, err := s.encrypt("k", plaintext)
 	if err != nil {
 		t.Fatalf("first encrypt: %v", err)
 	}
-	second, err := s.encrypt(plaintext)
+	second, err := s.encrypt("k", plaintext)
 	if err != nil {
 		t.Fatalf("second encrypt: %v", err)
 	}
@@ -53,13 +55,13 @@ func TestEncryptUsesDifferentNonces(t *testing.T) {
 
 func TestDecryptCorruptedCiphertext(t *testing.T) {
 	s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex}
-	encrypted, err := s.encrypt([]byte("hello"))
+	encrypted, err := s.encrypt("k", []byte("hello"))
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 	encrypted[len(encrypted)-1] ^= 0xff
 
-	if _, err := s.decrypt(encrypted); err == nil {
+	if _, err := s.decrypt("k", encrypted); err == nil {
 		t.Fatal("expected decrypt error for corrupted ciphertext")
 	}
 }
@@ -67,20 +69,20 @@ func TestDecryptCorruptedCiphertext(t *testing.T) {
 func TestDecryptTruncatedCiphertext(t *testing.T) {
 	s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex}
 
-	if _, err := s.decrypt([]byte("too-short")); err == nil {
+	if _, err := s.decrypt("k", []byte("too-short")); err == nil {
 		t.Fatal("expected decrypt error for truncated ciphertext")
 	}
 }
 
 func TestDecryptWithWrongKey(t *testing.T) {
 	encryptor := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex}
-	encrypted, err := encryptor.encrypt([]byte("secret"))
+	encrypted, err := encryptor.encrypt("k", []byte("secret"))
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 
 	decryptor := &AzureBlobStorage{EncryptionKey: "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"}
-	if _, err := decryptor.decrypt(encrypted); err == nil {
+	if _, err := decryptor.decrypt("k", encrypted); err == nil {
 		t.Fatal("expected decrypt error with wrong key")
 	}
 }
@@ -89,7 +91,7 @@ func TestEncryptDecryptNoopWhenKeyNotSet(t *testing.T) {
 	s := &AzureBlobStorage{}
 	plaintext := []byte("raw data")
 
-	encrypted, err := s.encrypt(plaintext)
+	encrypted, err := s.encrypt("k", plaintext)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -97,7 +99,7 @@ func TestEncryptDecryptNoopWhenKeyNotSet(t *testing.T) {
 		t.Fatal("encrypt should be passthrough when key is empty")
 	}
 
-	decrypted, err := s.decrypt(encrypted)
+	decrypted, err := s.decrypt("k", encrypted)
 	if err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
@@ -108,8 +110,9 @@ func TestEncryptDecryptNoopWhenKeyNotSet(t *testing.T) {
 
 func TestDecryptLoadedValueFallsBackToPlaintext(t *testing.T) {
 	s := &AzureBlobStorage{
-		EncryptionKey: testEncryptionKeyHex,
-		logger:        zap.NewNop(),
+		EncryptionKey:  testEncryptionKeyHex,
+		EncryptionMode: "migrate",
+		logger:         zap.NewNop(),
 	}
 
 	t.Run("short blob", func(t *testing.T) {
@@ -139,7 +142,7 @@ func TestDecryptLoadedValueFallsBackToPlaintext(t *testing.T) {
 
 	t.Run("encrypted blob with wrong key fails hard", func(t *testing.T) {
 		// Encrypt with the correct key, then try to load with a different key.
-		encrypted, err := s.encrypt([]byte("secret-cert-material"))
+		encrypted, err := s.encrypt("certs/example.com/privkey.pem", []byte("secret-cert-material"))
 		if err != nil {
 			t.Fatalf("encrypt: %v", err)
 		}
@@ -155,7 +158,7 @@ func TestDecryptLoadedValueFallsBackToPlaintext(t *testing.T) {
 	})
 
 	t.Run("corrupted encrypted blob fails hard", func(t *testing.T) {
-		encrypted, err := s.encrypt([]byte("secret-cert-material"))
+		encrypted, err := s.encrypt("certs/example.com/privkey.pem", []byte("secret-cert-material"))
 		if err != nil {
 			t.Fatalf("encrypt: %v", err)
 		}
@@ -172,7 +175,7 @@ func TestDecryptLoadedValueFallsBackToPlaintext(t *testing.T) {
 func TestEncryptDecryptEmptyPlaintext(t *testing.T) {
 	s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex}
 
-	encrypted, err := s.encrypt([]byte{})
+	encrypted, err := s.encrypt("k", []byte{})
 	if err != nil {
 		t.Fatalf("encrypt empty: %v", err)
 	}
@@ -181,7 +184,7 @@ func TestEncryptDecryptEmptyPlaintext(t *testing.T) {
 		t.Fatalf("encrypted empty = %d bytes, want %d", len(encrypted), minEncryptedBlobSize)
 	}
 
-	decrypted, err := s.decrypt(encrypted)
+	decrypted, err := s.decrypt("k", encrypted)
 	if err != nil {
 		t.Fatalf("decrypt empty: %v", err)
 	}
@@ -194,7 +197,7 @@ func TestEncryptedOutputStructure(t *testing.T) {
 	s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex}
 	plaintext := []byte("test data")
 
-	encrypted, err := s.encrypt(plaintext)
+	encrypted, err := s.encrypt("k", plaintext)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -218,12 +221,12 @@ func TestEncryptDecryptLargeData(t *testing.T) {
 		plaintext[i] = byte(i)
 	}
 
-	encrypted, err := s.encrypt(plaintext)
+	encrypted, err := s.encrypt("k", plaintext)
 	if err != nil {
 		t.Fatalf("encrypt 1MiB: %v", err)
 	}
 
-	decrypted, err := s.decrypt(encrypted)
+	decrypted, err := s.decrypt("k", encrypted)
 	if err != nil {
 		t.Fatalf("decrypt 1MiB: %v", err)
 	}
@@ -245,13 +248,13 @@ func TestEncryptDecryptConcurrent(t *testing.T) {
 			defer wg.Done()
 			plaintext := []byte(fmt.Sprintf("goroutine-%d-data", id))
 
-			encrypted, err := s.encrypt(plaintext)
+			encrypted, err := s.encrypt("k", plaintext)
 			if err != nil {
 				errs <- fmt.Errorf("goroutine %d encrypt: %w", id, err)
 				return
 			}
 
-			decrypted, err := s.decrypt(encrypted)
+			decrypted, err := s.decrypt("k", encrypted)
 			if err != nil {
 				errs <- fmt.Errorf("goroutine %d decrypt: %w", id, err)
 				return
@@ -273,7 +276,7 @@ func TestEncryptDecryptConcurrent(t *testing.T) {
 
 func TestEncryptWithInvalidKey(t *testing.T) {
 	s := &AzureBlobStorage{EncryptionKey: "not-hex"}
-	_, err := s.encrypt([]byte("data"))
+	_, err := s.encrypt("k", []byte("data"))
 	if err == nil {
 		t.Fatal("expected error for invalid encryption key during encrypt")
 	}
@@ -284,7 +287,7 @@ func TestEncryptWithInvalidKey(t *testing.T) {
 
 func TestDecryptWithInvalidKeyFormat(t *testing.T) {
 	s := &AzureBlobStorage{EncryptionKey: "not-hex"}
-	_, err := s.decrypt(make([]byte, minEncryptedBlobSize))
+	_, err := s.decrypt("k", make([]byte, minEncryptedBlobSize))
 	if err == nil {
 		t.Fatal("expected error for invalid encryption key during decrypt")
 	}
@@ -297,7 +300,7 @@ func TestDecryptMissingMagicHeader(t *testing.T) {
 	s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex}
 	// Data passes the length check (>= minEncryptedBlobSize) but lacks the magic header.
 	data := bytes.Repeat([]byte("x"), minEncryptedBlobSize)
-	_, err := s.decrypt(data)
+	_, err := s.decrypt("k", data)
 	if err == nil {
 		t.Fatal("expected error for missing magic header")
 	}
@@ -360,7 +363,7 @@ func TestDecryptLoadedValueSuccessfulDecrypt(t *testing.T) {
 	}
 
 	plaintext := []byte("encrypted-cert-material")
-	encrypted, err := s.encrypt(plaintext)
+	encrypted, err := s.encrypt("certs/example.com/key.pem", plaintext)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -376,7 +379,8 @@ func TestDecryptLoadedValueSuccessfulDecrypt(t *testing.T) {
 
 func TestDecryptLoadedValueFallbackNilLogger(t *testing.T) {
 	s := &AzureBlobStorage{
-		EncryptionKey: testEncryptionKeyHex,
+		EncryptionKey:  testEncryptionKeyHex,
+		EncryptionMode: "migrate",
 		// logger intentionally nil — verify no panic on fallback path.
 	}
 
@@ -389,5 +393,135 @@ func TestDecryptLoadedValueFallbackNilLogger(t *testing.T) {
 	}
 	if !bytes.Equal(got, data) {
 		t.Fatalf("decryptLoadedValue nil logger = %q, want %q", got, data)
+	}
+}
+
+func TestDecryptLoadedValueRejectsUnencryptedByDefault(t *testing.T) {
+	s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex, logger: zap.NewNop()}
+	for _, data := range [][]byte{[]byte("planted"), {}, bytes.Repeat([]byte("-----BEGIN PRIVATE KEY-----\n"), 40)} {
+		if _, err := s.decryptLoadedValue("certs/example.com/privkey.pem", data); err == nil {
+			t.Fatalf("expected error for unencrypted blob of %d bytes", len(data))
+		}
+	}
+}
+
+func TestDecryptBoundToKeyAndContainer(t *testing.T) {
+	s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex, Container: "a", logger: zap.NewNop()}
+	encrypted, err := s.encrypt("certs/victim.com/victim.com.key", []byte("victim key"))
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	if _, err := s.decryptLoadedValue("certs/attacker.com/attacker.com.key", encrypted); err == nil {
+		t.Fatal("ciphertext copied to another key must not decrypt")
+	}
+	other := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex, Container: "b", logger: zap.NewNop()}
+	if _, err := other.decryptLoadedValue("certs/victim.com/victim.com.key", encrypted); err == nil {
+		t.Fatal("ciphertext copied to another container must not decrypt")
+	}
+	if _, err := s.decryptLoadedValue("certs/victim.com/victim.com.key", encrypted); err != nil {
+		t.Fatalf("original key should decrypt: %v", err)
+	}
+}
+
+func TestLegacyEncryptedFormat(t *testing.T) {
+	s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex, logger: zap.NewNop()}
+	rawKey, _ := s.parseEncryptionKey()
+	block, _ := aes.NewCipher(rawKey)
+	aead, _ := cipher.NewGCM(block)
+	nonce := make([]byte, nonceSize)
+	legacy := append(append(append([]byte{}, legacyEncryptedBlobMagic...), nonce...), aead.Seal(nil, nonce, []byte("old"), nil)...)
+
+	got, err := s.decryptLoadedValue("k", legacy)
+	if err != nil || string(got) != "old" {
+		t.Fatalf("legacy encrypted blob must stay readable in the default mode: %q, %v", got, err)
+	}
+
+	legacy[len(legacy)-1] ^= 0xff
+	if _, err := s.decryptLoadedValue("k", legacy); err == nil {
+		t.Fatal("tampered legacy blob must fail authentication")
+	}
+}
+
+func legacyBlob(t *testing.T, s *AzureBlobStorage, plaintext string) []byte {
+	t.Helper()
+	rawKey, _ := s.parseEncryptionKey()
+	block, _ := aes.NewCipher(rawKey)
+	aead, _ := cipher.NewGCM(block)
+	nonce := make([]byte, nonceSize)
+	return append(append(append([]byte{}, legacyEncryptedBlobMagic...), nonce...), aead.Seal(nil, nonce, []byte(plaintext), nil)...)
+}
+
+func TestEncryptionModes(t *testing.T) {
+	base := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex, logger: zap.NewNop()}
+	current, err := base.encrypt("k", []byte("v"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := legacyBlob(t, base, "v")
+	plain := []byte("v")
+
+	tests := []struct {
+		mode                         string
+		currentOK, legacyOK, plainOK bool
+	}{
+		{"", true, true, false},
+		{"compatible", true, true, false},
+		{"strict", true, false, false},
+		{"migrate", true, true, true},
+	}
+	for _, tt := range tests {
+		t.Run("mode "+tt.mode, func(t *testing.T) {
+			s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex, EncryptionMode: tt.mode, logger: zap.NewNop()}
+			for name, c := range map[string]struct {
+				data []byte
+				ok   bool
+			}{"current": {current, tt.currentOK}, "legacy": {legacy, tt.legacyOK}, "plain": {plain, tt.plainOK}} {
+				got, err := s.decryptLoadedValue("k", c.data)
+				if c.ok && (err != nil || string(got) != "v") {
+					t.Errorf("%s: got %q, %v; want success", name, got, err)
+				}
+				if !c.ok && err == nil {
+					t.Errorf("%s: want error", name)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateEncryptionMode(t *testing.T) {
+	for _, bad := range []*AzureBlobStorage{
+		{EncryptionKey: testEncryptionKeyHex, EncryptionMode: "bogus"},
+		{EncryptionMode: "strict"},
+	} {
+		if _, err := bad.validateEncryptionMode(); err == nil {
+			t.Errorf("expected error for %+v", bad)
+		}
+	}
+	if _, err := (&AzureBlobStorage{}).validateEncryptionMode(); err != nil {
+		t.Errorf("no key and no mode must be valid: %v", err)
+	}
+}
+
+func TestUpgradeBlob(t *testing.T) {
+	s := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex, EncryptionMode: "migrate", logger: zap.NewNop()}
+
+	for name, raw := range map[string][]byte{"plaintext": []byte("secret"), "legacy": legacyBlob(t, s, "secret")} {
+		up, changed, err := s.upgradeBlob("k", raw)
+		if err != nil || !changed {
+			t.Fatalf("%s: changed=%v err=%v", name, changed, err)
+		}
+		strict := &AzureBlobStorage{EncryptionKey: testEncryptionKeyHex, EncryptionMode: "strict"}
+		if got, err := strict.decrypt("k", up); err != nil || string(got) != "secret" {
+			t.Fatalf("%s: upgraded blob not readable in strict mode: %q, %v", name, got, err)
+		}
+		if _, changed, _ := s.upgradeBlob("k", up); changed {
+			t.Fatalf("%s: current-format blob must not be rewritten", name)
+		}
+	}
+
+	bad := legacyBlob(t, s, "secret")
+	bad[len(bad)-1] ^= 0xff
+	if _, _, err := s.upgradeBlob("k", bad); err == nil {
+		t.Fatal("tampered legacy blob must not be upgraded")
 	}
 }
