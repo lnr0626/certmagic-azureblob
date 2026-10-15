@@ -222,7 +222,7 @@ func (s *AzureBlobStorage) Provision(ctx caddy.Context) error {
 	if mode == authContainerSAS {
 		parsed, err := url.Parse(s.ContainerSASURL)
 		if err != nil {
-			return fmt.Errorf("invalid container_sas_url: %w", err)
+			return fmt.Errorf("invalid container_sas_url: %w", redactURLError(err))
 		}
 		sasContainer := strings.TrimPrefix(parsed.Path, "/")
 		if sasContainer == "" {
