@@ -1,0 +1,57 @@
+# Emulates an Azure Arc-enabled machine: a fake Connected Machine agent (HIMDS)
+# issues tokens via the Arc key-file challenge, and Azurite validates the
+# bearer tokens over HTTPS. Run from the repo root:
+#
+#   docker compose -f docker/arc/docker-compose.yml run --rm tests
+services:
+  certs:
+    image: alpine/openssl
+    entrypoint: ["sh", "-c"]
+    command:
+      - >
+        openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=azurite
+        -addext subjectAltName=DNS:azurite
+        -keyout /certs/key.pem -out /certs/cert.pem
+    volumes: [certs:/certs]
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command: >
+      azurite-blob --blobHost 0.0.0.0 --disableProductStyleUrl
+      --oauth basic --cert /certs/cert.pem --key /certs/key.pem
+    volumes: [certs:/certs:ro]
+    depends_on:
+      certs: {condition: service_completed_successfully}
+
+  himds:
+    image: golang:1.25-alpine
+    working_dir: /src
+    command: go run ./docker/arc/himds
+    volumes:
+      - ../..:/src:ro
+      - tokens:/var/opt/azcmagent/tokens
+    healthcheck:
+      test: ["CMD", "test", "-s", "/var/opt/azcmagent/tokens/challenge.key"]
+      interval: 2s
+      retries: 60
+
+  tests:
+    image: golang:1.25
+    working_dir: /src
+    command: go test -tags arc -count=1 -v -run TestArc .
+    environment:
+      IDENTITY_ENDPOINT: http://himds:40342/metadata/identity/oauth2/token
+      IMDS_ENDPOINT: http://himds:40342
+      SSL_CERT_FILE: /certs/cert.pem
+      ARC_ACCOUNT_URL: https://azurite:10000/devstoreaccount1
+    volumes:
+      - ../..:/src
+      - certs:/certs:ro
+      - tokens:/var/opt/azcmagent/tokens:ro
+    depends_on:
+      himds: {condition: service_healthy}
+      azurite: {condition: service_started}
+
+volumes:
+  certs:
+  tokens:
