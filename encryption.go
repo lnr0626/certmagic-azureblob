@@ -7,6 +7,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+
+	"go.uber.org/zap"
 )
 
 const (
@@ -16,10 +18,22 @@ const (
 )
 
 // encryptedBlobMagic is a 4-byte header prepended to every encrypted blob.
-// It lets Load() distinguish "encrypted with this plugin" from "legacy
-// plaintext written before encryption was enabled" — without that marker the
-// fallback path can't tell a wrong-key failure from a legacy blob.
-var encryptedBlobMagic = []byte{0x00, 'E', 'N', 'C'}
+// It lets Load() tell an encrypted blob from a plaintext one, so a wrong-key
+// failure is never mistaken for a legacy blob.
+//
+// The current format (ENC2) binds the ciphertext to its container and blob
+// name through the GCM additional data, so a blob copied to another key or
+// container fails authentication.
+var encryptedBlobMagic = []byte{0x00, 'E', 'N', '2'}
+
+// legacyEncryptedBlobMagic marks the original format, which used no additional
+// data. They are still authenticated by the key, so they remain readable and
+// are rewritten in the current format on the next Store.
+var legacyEncryptedBlobMagic = []byte{0x00, 'E', 'N', 'C'}
+
+func (s *AzureBlobStorage) aad(key string) []byte {
+	return []byte(s.Container + "\x00" + s.blobName(key))
+}
 
 // minEncryptedBlobSize is magic + nonce + at least one GCM tag (empty plaintext).
 var minEncryptedBlobSize = len(encryptedBlobMagic) + nonceSize + gcmTagSize
@@ -28,17 +42,17 @@ func (s *AzureBlobStorage) encryptionEnabled() bool {
 	return s.EncryptionKey != ""
 }
 
-func (s *AzureBlobStorage) encrypt(plaintext []byte) ([]byte, error) {
+func (s *AzureBlobStorage) encrypt(key string, plaintext []byte) ([]byte, error) {
 	if !s.encryptionEnabled() {
 		return plaintext, nil
 	}
 
-	key, err := s.parseEncryptionKey()
+	rawKey, err := s.parseEncryptionKey()
 	if err != nil {
 		return nil, err
 	}
 
-	block, err := aes.NewCipher(key)
+	block, err := aes.NewCipher(rawKey)
 	if err != nil {
 		return nil, fmt.Errorf("creating AES cipher: %w", err)
 	}
@@ -52,7 +66,7 @@ func (s *AzureBlobStorage) encrypt(plaintext []byte) ([]byte, error) {
 		return nil, fmt.Errorf("generating nonce: %w", err)
 	}
 
-	sealed := aead.Seal(nil, nonce, plaintext, nil)
+	sealed := aead.Seal(nil, nonce, plaintext, s.aad(key))
 	encrypted := make([]byte, 0, len(encryptedBlobMagic)+len(nonce)+len(sealed))
 	encrypted = append(encrypted, encryptedBlobMagic...)
 	encrypted = append(encrypted, nonce...)
@@ -60,23 +74,33 @@ func (s *AzureBlobStorage) encrypt(plaintext []byte) ([]byte, error) {
 	return encrypted, nil
 }
 
-func (s *AzureBlobStorage) decrypt(ciphertext []byte) ([]byte, error) {
+func (s *AzureBlobStorage) decrypt(key string, ciphertext []byte) ([]byte, error) {
 	if !s.encryptionEnabled() {
 		return ciphertext, nil
 	}
 
-	key, err := s.parseEncryptionKey()
+	rawKey, err := s.parseEncryptionKey()
 	if err != nil {
 		return nil, err
 	}
 	if len(ciphertext) < minEncryptedBlobSize {
 		return nil, fmt.Errorf("ciphertext too short: got %d bytes, need at least %d", len(ciphertext), minEncryptedBlobSize)
 	}
-	if !bytes.Equal(ciphertext[:len(encryptedBlobMagic)], encryptedBlobMagic) {
+
+	var aad []byte
+	switch {
+	case bytes.Equal(ciphertext[:len(encryptedBlobMagic)], encryptedBlobMagic):
+		aad = s.aad(key)
+	case bytes.Equal(ciphertext[:len(legacyEncryptedBlobMagic)], legacyEncryptedBlobMagic):
+		if s.logger != nil {
+			s.logger.Warn("blob uses the legacy encryption format without key binding; it will be upgraded on next store",
+				zap.String("key", key))
+		}
+	default:
 		return nil, fmt.Errorf("missing encryption header")
 	}
 
-	block, err := aes.NewCipher(key)
+	block, err := aes.NewCipher(rawKey)
 	if err != nil {
 		return nil, fmt.Errorf("creating AES cipher: %w", err)
 	}
@@ -88,7 +112,7 @@ func (s *AzureBlobStorage) decrypt(ciphertext []byte) ([]byte, error) {
 	headerLen := len(encryptedBlobMagic)
 	nonce := ciphertext[headerLen : headerLen+nonceSize]
 	payload := ciphertext[headerLen+nonceSize:]
-	plaintext, err := aead.Open(nil, nonce, payload, nil)
+	plaintext, err := aead.Open(nil, nonce, payload, aad)
 	if err != nil {
 		return nil, fmt.Errorf("decrypting data: %w", err)
 	}

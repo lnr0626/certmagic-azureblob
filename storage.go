@@ -40,7 +40,7 @@ func (s *AzureBlobStorage) Store(ctx context.Context, key string, value []byte) 
 	if err != nil {
 		return fmt.Errorf("getting container client: %w", err)
 	}
-	payload, err := s.encrypt(value)
+	payload, err := s.encrypt(key, value)
 	if err != nil {
 		return fmt.Errorf("encrypting key %q: %w", key, err)
 	}
@@ -86,12 +86,18 @@ func (s *AzureBlobStorage) decryptLoadedValue(key string, data []byte) ([]byte, 
 		return data, nil
 	}
 
-	// If the blob doesn't start with our magic header, it was written before
-	// encryption was enabled.  Return the raw bytes — the next Store() will
-	// re-encrypt them.
-	if len(data) < len(encryptedBlobMagic) || !bytes.Equal(data[:len(encryptedBlobMagic)], encryptedBlobMagic) {
+	hasHeader := len(data) >= len(encryptedBlobMagic) &&
+		(bytes.Equal(data[:len(encryptedBlobMagic)], encryptedBlobMagic) ||
+			bytes.Equal(data[:len(legacyEncryptedBlobMagic)], legacyEncryptedBlobMagic))
+	if !hasHeader {
+		// A blob without the header could have been planted by anyone with
+		// write access to the container, so it is trusted only during an
+		// explicit migration.
+		if !s.AllowLegacyBlobs {
+			return nil, fmt.Errorf("loading key %q: blob is not encrypted but encryption_key is set; set allow_legacy_blobs to migrate blobs stored before encryption was enabled", key)
+		}
 		if s.logger != nil {
-			s.logger.Warn("encryption enabled but blob appears unencrypted; returning raw bytes (will be encrypted on next store)",
+			s.logger.Warn("allow_legacy_blobs: returning unencrypted blob (will be encrypted on next store)",
 				zap.String("key", key),
 				zap.Int("size", len(data)),
 			)
@@ -99,9 +105,7 @@ func (s *AzureBlobStorage) decryptLoadedValue(key string, data []byte) ([]byte, 
 		return data, nil
 	}
 
-	// Blob has the magic header — it was encrypted by this plugin.
-	// Decrypt failures here are real errors (wrong key, corruption).
-	plaintext, err := s.decrypt(data)
+	plaintext, err := s.decrypt(key, data)
 	if err != nil {
 		return nil, fmt.Errorf("decrypting key %q: %w", key, err)
 	}
