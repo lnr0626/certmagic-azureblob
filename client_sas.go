@@ -37,7 +37,7 @@ func (p *SASClientProvider) ContainerClient(ctx context.Context, containerName s
 
 	client, err := container.NewClientWithNoCredential(p.ContainerSASURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("creating container client from SAS URL: %w", err)
+		return nil, fmt.Errorf("creating container client from SAS URL: %w", redactURLError(err))
 	}
 	p.client = client
 	return client, nil

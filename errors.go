@@ -1,6 +1,10 @@
 package certmagicazureblob
 
 import (
+	"errors"
+	"fmt"
+	"net/url"
+
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 )
 
@@ -24,4 +28,14 @@ func isContainerNotFound(err error) bool {
 func isLeaseConflict(err error) bool {
 	return isStorageError(err, bloberror.LeaseAlreadyPresent) ||
 		isStorageError(err, "LeaseIsBreakingAndCannotBeAcquired")
+}
+
+// redactURLError drops the URL that *url.Error embeds in its message, which
+// for a container SAS URL would include the signature.
+func redactURLError(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("%s: %w", urlErr.Op, urlErr.Err)
+	}
+	return err
 }
